@@ -1,0 +1,16 @@
+﻿video_alias,config,threshold,scene_count,avg_scene_duration_sec,processing_time_sec
+video1,transnetv2_t40,0.4,26,13.6,122.4
+video1,transnetv2_t50,0.5,24,14.73,122.4
+video1,transnetv2_t60,0.6,24,14.73,122.41
+video2,transnetv2_t40,0.4,45,4.17,47.79
+video2,transnetv2_t50,0.5,45,4.17,47.79
+video2,transnetv2_t60,0.6,45,4.17,47.8
+video3,transnetv2_t40,0.4,26,22.49,149.76
+video3,transnetv2_t50,0.5,23,25.42,149.76
+video3,transnetv2_t60,0.6,22,26.58,149.76
+video4,transnetv2_t40,0.4,56,5.15,97.95
+video4,transnetv2_t50,0.5,55,5.24,97.96
+video4,transnetv2_t60,0.6,51,5.65,97.96
+video5,transnetv2_t40,0.4,19,5.84,38.9
+video5,transnetv2_t50,0.5,19,5.84,38.9
+video5,transnetv2_t60,0.6,16,6.94,38.9

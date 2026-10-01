@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CineSum AI — Yapay Zekâ Video Özetleme & Analiz Paneli</title>
+    <!-- Google Fonts: Inter & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js CDN for AI Analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <!-- Theater Mode Backdrop Overlay -->
+    <div class="theater-backdrop hidden" id="theaterBackdrop" onclick="toggleTheaterMode(false)"></div>
+
+    <!-- Background Glow Effects -->
+    <div class="glow-bg glow-purple"></div>
+    <div class="glow-bg glow-blue"></div>
+
+    <!-- Navigation Header -->
+    <header class="navbar">
+        <div class="logo">
+            <i class="fa-solid fa-film logo-icon"></i>
+            <span class="logo-text">Cine<span class="highlight">Sum</span> AI</span>
+        </div>
+        <div class="nav-badges">
+            <span class="badge"><i class="fa-solid fa-brain"></i> ViT-B/32 CLIP</span>
+            <span class="badge"><i class="fa-solid fa-microphone"></i> Whisper Speech</span>
+            <span class="badge badge-accent"><i class="fa-solid fa-bolt"></i> PySceneDetect</span>
+        </div>
+    </header>
+
+    <main class="container">
+
+        <!-- Hero Section -->
+        <section class="hero-section">
+            <h1 class="hero-title">Yapay Zekâ İle <span class="gradient-text">Akıllı Video Özetleme</span></h1>
+            <p class="hero-subtitle">Videolarınızı yükleyin veya mevcut veri kümesinden seçin; Aksiyon, Diyalog, Önemli Çekimler (Shots) ya da Özel Cümlelerinizle saniyeler içinde özet MP4 üretin.</p>
+        </section>
+
+        <!-- Main Dashboard Layout -->
+        <div class="dashboard-grid">
+
+            <!-- Left Controls Column -->
+            <div class="controls-card glass-panel">
+
+                <!-- Step 1: Video Selection & Upload -->
+                <div class="step-group">
+                    <div class="step-header">
+                        <span class="step-number">1</span>
+                        <h3 class="step-title">Video Seçimi veya Yükleme</h3>
+                    </div>
+
+                    <!-- Tabs for Select vs Upload -->
+                    <div class="tab-buttons">
+                        <button class="tab-btn active" id="tabSelectBtn" onclick="switchTab('select')">
+                            <i class="fa-solid fa-list-ul"></i> Mevcut Videolar
+                        </button>
+                        <button class="tab-btn" id="tabUploadBtn" onclick="switchTab('upload')">
+                            <i class="fa-solid fa-cloud-arrow-up"></i> Yeni Video Yükle
+                        </button>
+                    </div>
+
+                    <!-- Tab Content: Existing Videos -->
+                    <div class="tab-content" id="tabSelectContent">
+                        <label for="videoSelect" class="input-label">İşlenecek Videoyu Seçin:</label>
+                        <select id="videoSelect" class="custom-select">
+                            <option value="">Videolar yükleniyor...</option>
+                        </select>
+                    </div>
+
+                    <!-- Tab Content: Video Upload Dropzone -->
+                    <div class="tab-content hidden" id="tabUploadContent">
+                        <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+                            <i class="fa-solid fa-file-video dropzone-icon"></i>
+                            <p class="dropzone-text">Sürükleyip Bırakın veya <span>Dosya Seçin</span></p>
+                            <p class="dropzone-sub">MP4, MOV veya AVI (Maks 500MB)</p>
+                            <input type="file" id="fileInput" accept="video/mp4,video/quicktime,video/avi" style="display:none;" onchange="handleFileUpload(this.files)">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: Summary Category & Query -->
+                <div class="step-group">
+                    <div class="step-header">
+                        <span class="step-number">2</span>
+                        <h3 class="step-title">Özet Türü ve Kriter Seçimi</h3>
+                    </div>
+
+                    <div class="category-grid">
+                        <div class="cat-card active" id="catAction" onclick="selectCategory('action')">
+                            <i class="fa-solid fa-explosion cat-icon icon-red"></i>
+                            <div class="cat-info">
+                                <h4>Aksiyon Özeti</h4>
+                                <p>Hızlı hareket ve ses patlamaları</p>
+                            </div>
+                        </div>
+
+                        <div class="cat-card" id="catDialogue" onclick="selectCategory('dialogue')">
+                            <i class="fa-solid fa-comments cat-icon icon-blue"></i>
+                            <div class="cat-info">
+                                <h4>Diyalog Özeti</h4>
+                                <p>Whisper konuşma ve diyaloglar</p>
+                            </div>
+                        </div>
+
+                        <div class="cat-card" id="catImportance" onclick="selectCategory('importance')">
+                            <i class="fa-solid fa-star cat-icon icon-gold"></i>
+                            <div class="cat-info">
+                                <h4>Önemli Çekimler (Shots)</h4>
+                                <p>Görsel, ses ve hikaye birleşimi</p>
+                            </div>
+                        </div>
+
+                        <div class="cat-card" id="catCustom" onclick="selectCategory('custom')">
+                            <i class="fa-solid fa-magnifying-glass cat-icon icon-purple"></i>
+                            <div class="cat-info">
+                                <h4>Özel Prompt Arama</h4>
+                                <p>İstediğiniz cümleyi aratın</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Custom Prompt Input Box -->
+                    <div class="prompt-box hidden" id="promptBoxGroup">
+                        <label for="customPromptInput" class="input-label">Aratılacak Konu / Prompt Cümlesi:</label>
+                        <div class="input-with-icon">
+                            <i class="fa-solid fa-pen-nib"></i>
+                            <input type="text" id="customPromptInput" class="custom-input" placeholder="Örn: 'a car chase', 'a person crying', 'nature view'">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3: Duration Selection -->
+                <div class="step-group">
+                    <div class="step-header">
+                        <span class="step-number">3</span>
+                        <h3 class="step-title">Özet Süresi</h3>
+                    </div>
+
+                    <div class="duration-controls">
+                        <div class="checkbox-row">
+                            <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)">
+                            <label for="selectAllCheckbox">Tüm Eşleşen Çekimleri (Shots) Al (Süre Sınırı Yok)</label>
+                        </div>
+
+                        <div id="sliderGroup" class="slider-group">
+                            <div class="slider-header">
+                                <span>Hedef Süre:</span>
+                                <span class="slider-val" id="durValueDisplay">30 saniye</span>
+                            </div>
+                            <input type="range" id="durationSlider" min="10" max="120" step="5" value="30" oninput="updateDurationValue(this.value)">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="step-group">
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="narrativeAiCheckbox">
+                        <label for="narrativeAiCheckbox">
+                            Anlatıyı AI ile iyileştir <small>(opsiyonel RAG + Paralon)</small>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Step 4: Action Button -->
+                <button class="primary-btn" id="generateBtn" onclick="triggerSummarization()">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Yapay Zekâ Özeti Üret
+                </button>
+
+            </div>
+
+            <!-- Right Results & Player Column -->
+            <div class="results-card glass-panel" id="playerCardContainer">
+
+                <div class="results-header">
+                    <h3><i class="fa-solid fa-play-circle"></i> Video İzleme Stüdyosu</h3>
+                    <div class="header-actions">
+                        <span class="narrative-status hidden" id="narrativeStatusBadge"></span>
+                        <button class="icon-tool-btn" id="theaterBtn" onclick="toggleTheaterMode()" title="Tiyatro Modu">
+                            <i class="fa-solid fa-expand"></i> Tiyatro Modu
+                        </button>
+                        <a id="downloadBtn" href="#" download class="download-btn hidden">
+                            <i class="fa-solid fa-download"></i> Özeti İndir (.mp4)
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Dual View Mode Switcher Tabs (Original Video vs Summary Video) -->
+                <div class="view-mode-tabs">
+                    <button class="view-mode-btn active" id="viewModeFullBtn" onclick="switchPlayerViewMode('full')">
+                        <i class="fa-solid fa-video"></i> 🎬 Orijinal Tam Video & Tüm Grafik
+                    </button>
+                    <button class="view-mode-btn" id="viewModeSummaryBtn" onclick="switchPlayerViewMode('summary')">
+                        <i class="fa-solid fa-bolt"></i> ⚡ Kesilmiş Yapay Zekâ Özeti & Grafik
+                    </button>
+                </div>
+
+                <!-- Player Toolbar (Speed Controls & Legend) -->
+                <div class="player-toolbar">
+                    <div class="speed-controls">
+                        <span class="speed-label"><i class="fa-solid fa-gauge-high"></i> Hız:</span>
+                        <button class="speed-btn active" onclick="setPlaybackSpeed(1.0, this)">1.0x</button>
+                        <button class="speed-btn" onclick="setPlaybackSpeed(1.25, this)">1.25x</button>
+                        <button class="speed-btn" onclick="setPlaybackSpeed(1.5, this)">1.5x</button>
+                        <button class="speed-btn" onclick="setPlaybackSpeed(2.0, this)">2.0x</button>
+                    </div>
+                    <div class="timeline-legend">
+                        <span class="legend-item"><span class="legend-dot red-dot"></span> Aksiyon</span>
+                        <span class="legend-item"><span class="legend-dot green-dot"></span> Diyalog</span>
+                        <span class="legend-item"><span class="legend-dot overlap-dot"></span> Çakışan</span>
+                    </div>
+                </div>
+
+                <!-- Video Player Container with Live HUD Overlay -->
+                <div class="player-wrapper">
+                    <div class="player-placeholder" id="playerPlaceholder">
+                        <i class="fa-solid fa-film placeholder-icon"></i>
+                        <p>Özet üretildiğinde videonuz burada canlı oynatılacaktır.</p>
+                    </div>
+                    <video id="summaryVideoPlayer" class="summary-video hidden" controls autoplay></video>
+
+                    <!-- Live Floating HUD Badge Overlay (Only Score Badges) -->
+                    <div class="live-hud-overlay hidden" id="liveHudOverlay">
+                        <div class="hud-top-row">
+                            <span class="hud-badge shot-badge" id="hudShotBadge">Shot --</span>
+                            <span class="hud-badge score-red" id="hudActionScore">💥 Aksiyon: --</span>
+                            <span class="hud-badge score-green" id="hudDialogueScore">💬 Diyalog: --</span>
+                            <span class="hud-badge score-gold" id="hudImportanceScore">⭐ Önem: --</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Color-Coded Interactive Scrubber Bar -->
+                <div class="scrubber-container hidden" id="scrubberContainer">
+                    <div class="scrubber-label">
+                        <span id="scrubberTitleText"><i class="fa-solid fa-sliders"></i> İnteraktif Renk Kodlu Çekim Çizelgesi</span>
+                        <span id="scrubberTimeHover">00:00</span>
+                    </div>
+                    <div class="scrubber-bar" id="scrubberBar">
+                        <!-- Dynamic Color-Coded Segments Rendered via JS -->
+                    </div>
+                </div>
+
+                <!-- AI Analytics Wave Chart (Chart.js) -->
+                <div class="analytics-chart-section hidden" id="chartSection">
+                    <h4 class="section-title" id="chartTitleText"><i class="fa-solid fa-chart-line"></i> Canlı Yapay Zekâ Skor Dağılım Dalga Grafiği</h4>
+                    <div class="chart-wrapper">
+                        <canvas id="aiAnalyticsChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Searchable Interactive Transcript Viewer -->
+                <div class="transcript-section hidden" id="transcriptSection">
+                    <div class="transcript-header">
+                        <h4 class="section-title"><i class="fa-solid fa-closed-captioning"></i> Whisper Diyalog & Altyazı Paneli</h4>
+                        <div class="search-input-wrapper">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="transcriptSearchInput" class="search-input" placeholder="Diyalog içinde kelime arayın..." oninput="filterTranscripts(this.value)">
+                        </div>
+                    </div>
+                    <div class="transcript-list" id="transcriptList">
+                        <!-- Dynamic Searchable Transcripts Rendered Here -->
+                    </div>
+                </div>
+
+                <!-- Interactive Selected Scenes Timeline Cards -->
+                <div class="scenes-timeline-section hidden" id="scenesSection">
+                    <h4 class="timeline-title"><i class="fa-solid fa-layer-group"></i> Özet Videoya Dahil Edilen Çekimler (Shots)</h4>
+                    <div class="scenes-list" id="scenesList">
+                        <!-- Scene/Shot Cards Rendered Here Dynamically -->
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Processing Overlay Modal with Real-time Progress Bar -->
+    <div class="modal-overlay hidden" id="processingModal">
+        <div class="modal-content glass-panel">
+            <h3 class="modal-title" id="modalTitle">Yapay Zekâ Analiz Ediyor</h3>
+            <p class="modal-stage-desc" id="modalStageDesc">İşlem başlatılıyor...</p>
+
+            <!-- Real-time Progress Bar -->
+            <div class="progress-bar-container">
+                <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+            </div>
+
+            <div class="progress-stats">
+                <span class="progress-percent" id="progressPercent">0%</span>
+                <span class="progress-detail" id="progressDetail">Hazırlanıyor...</span>
+            </div>
+
+            <!-- Stage Steps Indicator -->
+            <div class="stage-steps-list">
+                <div class="stage-step-item" id="stepScene">
+                    <i class="fa-solid fa-bolt"></i> <span>1. Çekim (Shot) Bölütleme</span>
+                </div>
+                <div class="stage-step-item" id="stepClip">
+                    <i class="fa-solid fa-brain"></i> <span>2. CLIP Görsel Vektör</span>
+                </div>
+                <div class="stage-step-item" id="stepAudio">
+                    <i class="fa-solid fa-microphone"></i> <span>3. Ses & Whisper Metin</span>
+                </div>
+                <div class="stage-step-item" id="stepExport">
+                    <i class="fa-solid fa-film"></i> <span>4. FFmpeg Özet Kurgu</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
