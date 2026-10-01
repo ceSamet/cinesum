@@ -43,7 +43,7 @@ async function loadVideoInfo(videoAlias) {
                 selected_scenes: [], // No summary selected yet
             };
 
-            // Dynamically adjust duration slider MAX to the total duration of the selected video
+            // Keep the slider within the selected video's length and the 10-minute UI limit.
             updateDurationSliderLimits(data.all_scenes);
 
             currentViewMode = 'full';
@@ -56,29 +56,27 @@ async function loadVideoInfo(videoAlias) {
     }
 }
 
-// Dynamically set Duration Slider MAX to total video length in seconds
+function formatDuration(seconds) {
+    const value = Math.round(Number(seconds));
+    const minutes = Math.floor(value / 60);
+    const remainder = value % 60;
+    return minutes ? `${minutes} dk${remainder ? ` ${remainder} sn` : ''}` : `${remainder} sn`;
+}
+
+// Limit the slider to ten minutes, or the video's length when shorter.
 function updateDurationSliderLimits(allScenes) {
     const slider = document.getElementById('durationSlider');
-    const display = document.getElementById('durValueDisplay');
 
     if (!allScenes || allScenes.length === 0) return;
 
-    const totalDurSec = Math.round(allScenes.reduce((acc, sc) => acc + sc.duration_seconds, 0));
+    const totalDurSec = Math.round(Math.max(...allScenes.map(sc => sc.end_seconds)));
 
     if (totalDurSec > 0) {
-        slider.min = "5";
-        slider.max = totalDurSec.toString();
-        
-        // If current slider value exceeds total video duration, clamp it
-        if (parseInt(slider.value) > totalDurSec) {
-            slider.value = totalDurSec.toString();
-        }
-
-        const mins = Math.floor(totalDurSec / 60);
-        const secs = totalDurSec % 60;
-        const formattedTotal = mins > 0 ? `${mins}dk ${secs}s` : `${secs}s`;
-
-        display.textContent = `${slider.value} saniye (Maks: ${formattedTotal})`;
+        const maxDuration = Math.min(600, totalDurSec);
+        slider.min = String(Math.min(10, maxDuration));
+        slider.max = String(maxDuration);
+        slider.value = String(Math.min(Number(slider.value), maxDuration));
+        updateDurationValue(slider.value);
     }
 }
 
@@ -149,13 +147,7 @@ function selectCategory(cat) {
 // Duration slider & checkbox controls
 function updateDurationValue(val) {
     const slider = document.getElementById('durationSlider');
-    const maxVal = slider.max;
-    
-    const maxMins = Math.floor(maxVal / 60);
-    const maxSecs = maxVal % 60;
-    const formattedTotal = maxMins > 0 ? `${maxMins}dk ${maxSecs}s` : `${maxSecs}s`;
-
-    document.getElementById('durValueDisplay').textContent = `${val} saniye (Maks: ${formattedTotal})`;
+    document.getElementById('durValueDisplay').textContent = `${formatDuration(val)} (Maks: ${formatDuration(slider.max)})`;
 }
 
 function toggleSelectAll(isChecked) {
@@ -237,6 +229,8 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
     percentEl.textContent = '0%';
     stageDescEl.textContent = 'İşlem başlatılıyor...';
     detailEl.textContent = 'Hazırlanıyor...';
+    document.getElementById('activityList').replaceChildren();
+    document.getElementById('activityElapsed').textContent = '0 sn';
 
     ['stepScene', 'stepClip', 'stepAudio', 'stepExport'].forEach(s => {
         const el = document.getElementById(s);
@@ -258,6 +252,33 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
                 percentEl.textContent = `${p}%`;
                 stageDescEl.textContent = progData.stage_desc || 'İşleniyor...';
                 detailEl.textContent = progData.detail || '';
+                document.getElementById('activityElapsed').textContent = `${Math.round(progData.elapsed_sec || 0)} sn`;
+                const activityList = document.getElementById('activityList');
+                const events = progData.events || [];
+                if (activityList.children.length !== events.length) {
+                    activityList.replaceChildren();
+                    events.forEach(() => {
+                        const item = document.createElement('li');
+                        item.className = 'activity-item';
+                        const icon = document.createElement('span');
+                        const body = document.createElement('span');
+                        const title = document.createElement('span');
+                        const detail = document.createElement('small');
+                        const duration = document.createElement('time');
+                        body.append(title, detail);
+                        item.append(icon, body, duration);
+                        activityList.append(item);
+                    });
+                    activityList.scrollTop = activityList.scrollHeight;
+                }
+                events.forEach((event, index) => {
+                    const item = activityList.children[index];
+                    item.className = `activity-item ${event.status}`;
+                    item.children[0].textContent = event.status === 'completed' ? '✓' : event.status === 'failed' ? '!' : '●';
+                    item.children[1].children[0].textContent = event.stage_desc;
+                    item.children[1].children[1].textContent = event.detail || '';
+                    item.children[2].textContent = `${Math.round(event.duration_sec || 0)} sn`;
+                });
 
                 const activeStep = progData.active_step;
                 const stepsOrder = ['stepScene', 'stepClip', 'stepAudio', 'stepExport'];

@@ -103,6 +103,8 @@ def export_category_summary(
     output_p = Path(output_mp4_path)
 
     # 1. Build Coherent Temporal Segments
+    if progress_callback:
+        progress_callback(72, "Özet adayları seçiliyor...", f"{category} sahneleri değerlendiriliyor", "stepClip")
     seg_builder_res = build_temporal_segments(
         shots=scored_scenes,
         category=category,
@@ -134,6 +136,8 @@ def export_category_summary(
     # Whisper VAD can miss quiet but narratively decisive dialogue. Recheck only
     # visually critical selected windows so cached summary generation stays bounded.
     if category.lower() == "importance" and audio_wav_path is not None:
+        if progress_callback:
+            progress_callback(79, "Kritik sessiz anlarda konuşma kontrolü...", f"{len(segments)} aday aralık", "stepAudio")
         segments, targeted_asr = refine_critical_silent_segments(
             segments,
             scored_scenes,
@@ -152,6 +156,8 @@ def export_category_summary(
     # every selected segment's own edges against the real audio and extend them
     # if needed, for every category (not just importance).
     if audio_wav_path is not None:
+        if progress_callback:
+            progress_callback(81, "Konuşma sınırları doğrulanıyor...", f"{len(segments)} aralık", "stepAudio")
         video_duration_hint = scored_scenes[-1]["end_seconds"] if scored_scenes else None
         segments, boundary_verification = verify_and_extend_speech_boundaries(
             segments,
@@ -174,6 +180,8 @@ def export_category_summary(
         Path(base_dir) / "outputs" / "features" / "audio" / f"{video_alias or video_p.stem}_transcript.json"
         if base_dir is not None else None
     )
+    if progress_callback:
+        progress_callback(83, "Tam replikler hedef süreye sığdırılıyor...", f"{len(segments)} aralık", "stepAudio")
     segments, ceiling_info = guard_and_fit_segments(
         segments,
         turns=load_turns(transcript_path),

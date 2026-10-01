@@ -7,3 +7,4 @@ models/
 sample_test.mp4
 .pytest_cache/
 thanos/dataset/video/
+thanos/dataset/video_mapping.json

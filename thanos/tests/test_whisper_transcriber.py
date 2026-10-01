@@ -27,6 +27,14 @@ class TestWhisperSceneMapping(unittest.TestCase):
         ), patch.dict("os.environ", {"THANOS_WHISPER_DEVICE": "auto"}):
             self.assertEqual(resolve_whisper_device(), "cpu")
 
+    def test_windows_cuda_uses_ctranslate2_device_count(self):
+        with patch("src.audio.whisper_transcriber.sys.platform", "win32"), patch(
+            "ctranslate2.get_cuda_device_count", return_value=1
+        ), patch("torch.cuda.is_available", return_value=True), patch.dict(
+            "os.environ", {"THANOS_WHISPER_DEVICE": "auto"}
+        ):
+            self.assertEqual(resolve_whisper_device(), "cuda")
+
     def test_cuda_iterator_failure_retries_cpu(self):
         class BrokenCuda:
             def transcribe(self, *args, **kwargs):
