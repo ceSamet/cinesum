@@ -6,3 +6,4 @@ outputs/
 models/
 sample_test.mp4
 .pytest_cache/
+thanos/dataset/video/
