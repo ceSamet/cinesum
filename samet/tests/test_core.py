@@ -50,6 +50,50 @@ class SceneDetectorTests(unittest.TestCase):
 
 
 class WebTests(unittest.TestCase):
+    def test_moved_job_paths_and_legacy_cache_remain_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "samet" / "outputs" / "web"
+            legacy = root / "outputs" / "web"
+            job_id = "a" * 32
+            job_dir = legacy / "jobs" / job_id
+            upload_dir = legacy / "uploads" / job_id
+            (job_dir / "frames").mkdir(parents=True)
+            upload_dir.mkdir(parents=True)
+            (job_dir / "frames" / "first.jpg").write_bytes(b"frame")
+            (upload_dir / "film.mp4").write_bytes(b"video")
+            (job_dir / "state.json").write_text(json.dumps({
+                "job_id": job_id,
+                "created_at": "2026-09-01T12:00:00",
+                "status": "complete",
+                "video_filename": "film.mp4",
+                "analysis": {
+                    "scenes": [{"frame_path": "/old/place/frames/first.jpg"}],
+                    "highlight_path": "/old/place/highlight.mp4",
+                },
+            }), encoding="utf-8")
+            with patch.object(web_module, "JOBS_DIR", current / "jobs"), patch.object(
+                web_module, "UPLOADS_DIR", current / "uploads"
+            ), patch.object(web_module, "LEGACY_JOBS_DIR", legacy / "jobs"), patch.object(
+                web_module, "LEGACY_UPLOADS_DIR", legacy / "uploads"
+            ):
+                state = web_module._read_state(job_id)
+                self.assertEqual(
+                    state["analysis"]["scenes"][0]["frame_path"],
+                    str(job_dir / "frames" / "first.jpg"),
+                )
+                self.assertEqual(
+                    web_module._find_cached_job(
+                        upload_dir / "film.mp4",
+                        web_module._sha256_file(upload_dir / "film.mp4"),
+                        "b" * 32,
+                    ),
+                    job_id,
+                )
+                response = app.test_client().get(f"/outputs/{job_id}/frames/first.jpg")
+                self.assertEqual(response.status_code, 200)
+                response.close()
+
     def test_dashboard_and_model_health_routes(self) -> None:
         client = app.test_client()
         page = client.get("/")

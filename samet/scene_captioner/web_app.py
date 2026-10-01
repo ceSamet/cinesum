@@ -27,6 +27,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = BASE_DIR / "outputs" / "web"
 UPLOADS_DIR = OUTPUTS_DIR / "uploads"
 JOBS_DIR = OUTPUTS_DIR / "jobs"
+LEGACY_OUTPUTS_DIR = BASE_DIR.parent / "outputs" / "web"
+LEGACY_UPLOADS_DIR = LEGACY_OUTPUTS_DIR / "uploads"
+LEGACY_JOBS_DIR = LEGACY_OUTPUTS_DIR / "jobs"
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
 app = Flask(__name__)
@@ -36,6 +39,64 @@ state_lock = threading.Lock()
 job_states: dict[str, dict] = {}
 job_cancel_events: dict[str, threading.Event] = {}
 job_futures: dict[str, object] = {}
+
+
+def _job_dir(job_id: str) -> Path:
+    current = JOBS_DIR / job_id
+    legacy = LEGACY_JOBS_DIR / job_id
+    return current if current.exists() or not legacy.exists() else legacy
+
+
+def _upload_dir(job_id: str) -> Path:
+    current = UPLOADS_DIR / job_id
+    legacy = LEGACY_UPLOADS_DIR / job_id
+    return current if current.exists() or not legacy.exists() else legacy
+
+
+def _job_directories():
+    seen: set[str] = set()
+    for root in (JOBS_DIR, LEGACY_JOBS_DIR):
+        if not root.exists():
+            continue
+        for directory in root.iterdir():
+            if directory.is_dir() and directory.name not in seen:
+                seen.add(directory.name)
+                yield directory
+
+
+def _relocate_analysis_paths(job_id: str, state: dict) -> dict:
+    """Resolve paths saved before the project was moved into samet/."""
+    analysis = state.get("analysis")
+    if not isinstance(analysis, dict):
+        return state
+    job_dir = _job_dir(job_id)
+    analysis = dict(analysis)
+    analysis["scenes"] = [
+        {
+            **scene,
+            "frame_path": str(job_dir / "frames" / Path(scene["frame_path"]).name),
+        } if scene.get("frame_path") else scene
+        for scene in analysis.get("scenes", [])
+    ]
+    analysis["cast"] = [
+        {
+            **person,
+            "portrait_path": str(job_dir / "portraits" / Path(person["portrait_path"]).name),
+        } if person.get("portrait_path") else person
+        for person in analysis.get("cast", [])
+    ]
+    if analysis.get("highlight_path"):
+        analysis["highlight_path"] = str(job_dir / "highlight.mp4")
+    selection = analysis.get("selection")
+    if isinstance(selection, dict):
+        selection = dict(selection)
+        llm = selection.get("llm_selection")
+        if isinstance(llm, dict) and llm.get("vector_database"):
+            selection["llm_selection"] = {
+                **llm, "vector_database": str(job_dir / "scene_rag.sqlite3")
+            }
+        analysis["selection"] = selection
+    return {**state, "analysis": analysis}
 
 
 def _stop_process() -> None:
@@ -73,9 +134,9 @@ def _read_state(job_id: str) -> dict:
         state = job_states.get(job_id)
     if state:
         return state
-    path = JOBS_DIR / job_id / "state.json"
+    path = _job_dir(job_id) / "state.json"
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _relocate_analysis_paths(job_id, json.loads(path.read_text(encoding="utf-8")))
     raise FileNotFoundError("İş bulunamadı")
 
 
@@ -96,13 +157,13 @@ def _decorate(job_id: str, state: dict) -> dict:
             portrait_path = person.get("portrait_path")
             if portrait_path:
                 portrait_name = Path(portrait_path).name
-                if (JOBS_DIR / job_id / "portraits" / portrait_name).exists():
+                if (_job_dir(job_id) / "portraits" / portrait_name).exists():
                     person["portrait_url"] = f"/outputs/{job_id}/portraits/{portrait_name}"
             cast.append(person)
         analysis["cast"] = cast
         if not analysis.get("embedding_map"):
-            embedding_path = JOBS_DIR / job_id / "scene_embeddings.npy"
-            cache_path = JOBS_DIR / job_id / "embedding_map.json"
+            embedding_path = _job_dir(job_id) / "scene_embeddings.npy"
+            cache_path = _job_dir(job_id) / "embedding_map.json"
             try:
                 if cache_path.exists():
                     embedding_map = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -155,7 +216,7 @@ def _decorate(job_id: str, state: dict) -> dict:
             analysis["highlight_url"] = f"/outputs/{job_id}/highlight.mp4"
         payload["analysis"] = analysis
     upload_name = payload.get("video_filename") or payload.get("title")
-    if upload_name and (UPLOADS_DIR / job_id / upload_name).exists():
+    if upload_name and (_upload_dir(job_id) / upload_name).exists():
         payload["source_url"] = f"/uploads/{job_id}/{upload_name}"
     return payload
 
@@ -170,17 +231,15 @@ def _sha256_file(path: Path) -> str:
 
 def _find_cached_job(video_path: Path, digest: str, current_job_id: str) -> str | None:
     candidates = []
-    if not JOBS_DIR.exists():
-        return None
-    for directory in JOBS_DIR.iterdir():
-        if not directory.is_dir() or directory.name == current_job_id:
+    for directory in _job_directories():
+        if directory.name == current_job_id:
             continue
         try:
             state = _read_state(directory.name)
             analysis = state.get("analysis") or {}
             if state.get("status") != "complete" or not analysis.get("scenes"):
                 continue
-            upload = UPLOADS_DIR / directory.name / str(state.get("video_filename") or "")
+            upload = _upload_dir(directory.name) / str(state.get("video_filename") or "")
             if not upload.is_file() or upload.stat().st_size != video_path.stat().st_size:
                 continue
             candidates.append((state.get("created_at") or "", directory.name, state, upload))
@@ -233,12 +292,12 @@ def _run_analysis(
 
         if cache_job_id:
             cached_state = _read_state(cache_job_id)
-            _copy_cached_assets(JOBS_DIR / cache_job_id, JOBS_DIR / job_id)
+            _copy_cached_assets(_job_dir(cache_job_id), JOBS_DIR / job_id)
             analysis = reanalyze_from_cache(
                 video_path=video_path,
                 job_dir=JOBS_DIR / job_id,
                 cached_analysis=cached_state["analysis"],
-                cached_job_dir=JOBS_DIR / cache_job_id,
+                cached_job_dir=_job_dir(cache_job_id),
                 budget_ratio=ratio,
                 selection_request=selection_request,
                 progress=report,
@@ -416,10 +475,8 @@ def cancel_job(job_id: str):
 @app.get("/api/history")
 def history():
     items = []
-    if JOBS_DIR.exists():
-        for directory in JOBS_DIR.iterdir():
-            if not directory.is_dir():
-                continue
+    if JOBS_DIR.exists() or LEGACY_JOBS_DIR.exists():
+        for directory in _job_directories():
             try:
                 state = _read_state(directory.name)
                 analysis = state.get("analysis") or {}
@@ -436,12 +493,12 @@ def history():
 
 @app.get("/outputs/<job_id>/<path:filename>")
 def output(job_id: str, filename: str):
-    return send_from_directory(JOBS_DIR / _job_id(job_id), filename)
+    return send_from_directory(_job_dir(_job_id(job_id)), filename)
 
 
 @app.get("/uploads/<job_id>/<filename>")
 def uploaded_video(job_id: str, filename: str):
-    return send_from_directory(UPLOADS_DIR / _job_id(job_id), filename)
+    return send_from_directory(_upload_dir(_job_id(job_id)), filename)
 
 
 def main() -> None:

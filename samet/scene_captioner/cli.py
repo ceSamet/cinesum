@@ -9,12 +9,16 @@ from .pipeline import run_scene_captioning, write_outputs
 
 
 def load_env_file() -> None:
+    project_dir = Path(__file__).resolve().parent.parent
+    env_path = next(
+        (candidate for candidate in (project_dir / ".env", project_dir.parent / ".env") if candidate.is_file()),
+        None,
+    )
+    if env_path is None:
+        return
     try:
         from dotenv import load_dotenv
     except ImportError:
-        env_path = Path(".env")
-        if not env_path.exists():
-            return
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -25,7 +29,7 @@ def load_env_file() -> None:
                 os.environ.setdefault(key, value.strip().strip("'\""))
         return
 
-    load_dotenv()
+    load_dotenv(dotenv_path=env_path, override=False)
 
 
 def build_parser() -> argparse.ArgumentParser:

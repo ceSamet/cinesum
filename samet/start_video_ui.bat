@@ -12,9 +12,9 @@ echo Klasor: %CD%
 echo Adres : %APP_URL%
 echo.
 
-if exist ".venv\Scripts\activate.bat" (
+if exist "..\.venv\Scripts\activate.bat" (
     echo .venv aktif ediliyor...
-    call ".venv\Scripts\activate.bat"
+    call "..\.venv\Scripts\activate.bat"
 ) else (
     echo .venv bulunamadi; sistemdeki python kullanilacak.
 )
