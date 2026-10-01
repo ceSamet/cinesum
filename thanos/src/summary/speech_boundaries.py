@@ -555,7 +555,7 @@ def find_safe_budget_end(
     min_duration: float,
     context: Optional[SpeechContext] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Find a budget-fitting end without cutting a sentence in speech-aware modes."""
+    """Find a budget-fitting end without cutting any detected sentence."""
     context = context or build_speech_context(shots)
     start = float(segment_start)
     target = float(target_end)

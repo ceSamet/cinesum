@@ -1,6 +1,6 @@
 # Thanos — birleşik video özetleme
 
-`thanos/`, Gökdeniz'in CineSum analiz, önbellek, StoryScene, RAG/Paralon ve web akışını; Samet'in esnek içerik seçimi, tam konuşma turu koruması, sesli FFmpeg çıktısı ve yüz/konuşmacı eşleştirmesiyle birleştirir. Kaynak projelerdeki dosyalar değiştirilmez. Nezihat'ın gelecek Whisper/diarization çalışması bu sürüme henüz eklenmedi.
+`thanos/`, Gökdeniz'in CineSum analiz, önbellek, StoryScene, RAG/Paralon ve web akışını; Samet'in esnek içerik seçimi, tam konuşma turu koruması, sesli FFmpeg çıktısı ve yüz/konuşmacı eşleştirmesiyle birleştirir. Kaynak projelerdeki dosyalar değiştirilmez. Nezihat'ın gelecek Whisper/diarization çalışması bu sürüme henüz eklenmedi. Bileşenlerin bağlantıları ve veri akışı için [ayrıntılı mimari belgesine](MIMARI_VE_CALISMA_AKISI.md) bakın.
 
 ## Çalıştırma
 
@@ -23,7 +23,7 @@ Video yükleme → SHA-256 ile aynı dosyayı bul/önbelleği kullan
               → FFmpeg trim/atrim + concat → sesli MP4
 ```
 
-Önem özetinde sabit üç perde yüzdeleri zorlanmaz; zayıf bir baş/orta/son diliminden sırf kota dolsun diye sahne seçilmez. Zamanın 10 diliminden birine %34'ün, aynı olay grubuna %28'in üzerinde yığılma olursa tekrar eden adayların değeri yumuşak biçimde düşer. Bu cezalar yeterince güçlü içeriği tamamen yasaklamaz. Samet'in 0,22 saniyelik payla genişlettiği Whisper konuşma turları **en son** aşamada tekrar kontrol edilir; bütçe aşılırsa cümle ortasından kesmek yerine en düşük yararlı tam aralık çıkarılır. Çok kısa hedefe hiçbir tam cümle sığmazsa açık hata döner.
+Önem özetinde sabit üç perde yüzdeleri zorlanmaz; zayıf bir baş/orta/son diliminden sırf kota dolsun diye sahne seçilmez. Zamanın 10 diliminden birine %34'ün, aynı olay grubuna %28'in üzerinde yığılma olursa tekrar eden adayların değeri yumuşak biçimde düşer. Bu cezalar yeterince güçlü içeriği tamamen yasaklamaz. Samet'in 0,22 saniyelik payla genişlettiği Whisper konuşma turları **segment bütçe optimizasyonundan önce** süre maliyeti olarak uygulanır ve en son tekrar kontrol edilir; bütçe aşılırsa cümle ortasından kesmek yerine hedef süreye en çok yaklaşan tam aralık alt kümesi seçilir. Kısa kalan aksiyon/diyalog/özel özetler için uygun yedek sahnelerle güvenli süre doldurma yapılır. Çok kısa hedefe hiçbir tam cümle sığmazsa açık hata döner.
 
 Analiz dosyaları `thanos/outputs/`, yüklenen videolar `thanos/dataset/video/` altındadır. İçerik hash'i aynı videonun yeniden yüklenmesinde eski alias'ı ve özellikleri kullanır. `THANOS_ENABLE_PEOPLE=false` yüz/konuşmacı aşamasını kapatır; diğer özetleme özellikleri çalışır. Bu dalın çıktısı `outputs/features/audio/*_people.json` ve isteğe bağlı `outputs/portraits/` altındadır.
 

@@ -70,7 +70,7 @@ def guard_and_fit_segments(
     video_duration: float,
     target_duration_sec: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Expand cuts to whole speech turns, merge overlaps, drop weak clips if over budget.
+    """Expand cuts to whole speech turns and fit complete intervals to the budget.
 
     Crucially, duration is charged *after* expansion. Never shorten a spoken
     turn just to hit an exact time target.

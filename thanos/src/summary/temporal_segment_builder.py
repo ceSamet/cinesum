@@ -1328,9 +1328,8 @@ def build_temporal_segments(
                             # safety pad that untrimmed segments get (step 5 above),
                             # or Whisper's slightly-imprecise word timestamps can
                             # shave off the trailing sound of the last word. The
-                            # pad is only clamped by the video length here; the
-                            # true hard duration cap is enforced later, once, by
-                            # enforce_duration_ceiling() over the final segment list.
+                            # pad is bounded by the remaining duration here;
+                            # the final whole-turn guard checks the cut again.
                             trial_description = describe_segment_window(
                                 seg.start, trimmed_end, smooth_shots, speech_context
                             )
