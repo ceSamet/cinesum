@@ -1,0 +1,4 @@
+# Optional BLIP + lightweight LLaVA layer. Install after the GPU requirements.
+transformers>=4.53,<6
+Pillow>=10,<13
+sentencepiece>=0.2,<1

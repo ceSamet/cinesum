@@ -1,0 +1,13 @@
+﻿video_name,video_stem,config_label,detector_type,threshold,detected_scene_count,avg_scene_duration_sec,json_output,csv_output
+video50.mp4,video50,content_t15,content,15.0,30,7.68,outputs\pyscenedetect\scene_lists\video50_content_t15.json,outputs\pyscenedetect\scene_lists\video50_content_t15.csv
+video50.mp4,video50,content_t27,content,27.0,16,14.4,outputs\pyscenedetect\scene_lists\video50_content_t27.json,outputs\pyscenedetect\scene_lists\video50_content_t27.csv
+video50.mp4,video50,content_t35,content,35.0,11,20.95,outputs\pyscenedetect\scene_lists\video50_content_t35.json,outputs\pyscenedetect\scene_lists\video50_content_t35.csv
+video50.mp4,video50,adaptive_t3.0,adaptive,3.0,20,11.52,outputs\pyscenedetect\scene_lists\video50_adaptive_t3.0.json,outputs\pyscenedetect\scene_lists\video50_adaptive_t3.0.csv
+video13.mp4,video13,content_t15,content,15.0,26,5.43,outputs\pyscenedetect\scene_lists\video13_content_t15.json,outputs\pyscenedetect\scene_lists\video13_content_t15.csv
+video13.mp4,video13,content_t27,content,27.0,20,7.06,outputs\pyscenedetect\scene_lists\video13_content_t27.json,outputs\pyscenedetect\scene_lists\video13_content_t27.csv
+video13.mp4,video13,content_t35,content,35.0,18,7.85,outputs\pyscenedetect\scene_lists\video13_content_t35.json,outputs\pyscenedetect\scene_lists\video13_content_t35.csv
+video13.mp4,video13,adaptive_t3.0,adaptive,3.0,21,6.73,outputs\pyscenedetect\scene_lists\video13_adaptive_t3.0.json,outputs\pyscenedetect\scene_lists\video13_adaptive_t3.0.csv
+video19.mp4,video19,content_t15,content,15.0,56,3.42,outputs\pyscenedetect\scene_lists\video19_content_t15.json,outputs\pyscenedetect\scene_lists\video19_content_t15.csv
+video19.mp4,video19,content_t27,content,27.0,20,9.58,outputs\pyscenedetect\scene_lists\video19_content_t27.json,outputs\pyscenedetect\scene_lists\video19_content_t27.csv
+video19.mp4,video19,content_t35,content,35.0,13,14.74,outputs\pyscenedetect\scene_lists\video19_content_t35.json,outputs\pyscenedetect\scene_lists\video19_content_t35.csv
+video19.mp4,video19,adaptive_t3.0,adaptive,3.0,12,15.97,outputs\pyscenedetect\scene_lists\video19_adaptive_t3.0.json,outputs\pyscenedetect\scene_lists\video19_adaptive_t3.0.csv

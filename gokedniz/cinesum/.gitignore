@@ -1,0 +1,46 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python Cache & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Dataset Large Video & Audio Files (MP4, MOV, AVI)
+dataset/video/*.mp4
+dataset/video/*.mov
+dataset/video/*.avi
+dataset/video/*.mkv
+
+# Keyframe Image Files (JPG, PNG) - IGNORE HEAVY IMAGES
+outputs/pyscenedetect/keyframes/**/*.jpg
+outputs/pyscenedetect/keyframes/**/*.jpeg
+outputs/pyscenedetect/keyframes/**/*.png
+outputs/pyscenedetect/keyframes/**/*.webp
+
+# Output Heavy Binaries & Exported Summaries
+outputs/audio/
+outputs/summaries/
+outputs/scene_clips/
+outputs/features/visual/*.npy
+outputs/features/story/
+outputs/features/rag/
+outputs/cache/llm/
+outputs/features/audio/*_transcript.json
+outputs/features/audio/*_transcript_raw.json
+outputs/manifests/
+
+# Temporary & Log Files
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+.env
+.env.*
+!.env.example
