@@ -102,7 +102,7 @@ class TestTemporalSegmentBuilder(unittest.TestCase):
             shots, category="importance", target_duration_sec=8.0
         )
         segment = result["segments"][0]
-        self.assertEqual(result["summary_algorithm_version"], "3.9.0")
+        self.assertEqual(result["summary_algorithm_version"], "3.10.0")
         self.assertEqual(segment["word_count"], 2)
         self.assertIn(segment["boundary_mode"], {"shot", "sentence", "word"})
         self.assertIn("complete_utterance", segment)
@@ -237,12 +237,36 @@ class TestTemporalSegmentBuilder(unittest.TestCase):
         }]
         res = build_temporal_segments(shots, category="dialogue", target_duration_sec=6.5)
         segment = res["segments"][0]
-        # The safe sentence boundary within budget is 6.3s ("Four."); a
-        # budget-trimmed speech segment must still carry its trailing acoustic pad
-        # instead of ending exactly on the word timestamp (which can otherwise
-        # clip the tail of the last word).
+        # Keep as much acoustic pad as fits beyond the safe sentence boundary.
         self.assertTrue(segment["budget_trimmed"])
         self.assertGreater(segment["end"], 6.3)
+        self.assertLessEqual(segment["end"], 6.5)
+
+    def test_action_refills_duration_without_cutting_utterances(self):
+        shots = []
+        for index in range(12):
+            start = index * 12.0
+            shots.append({
+                "scene_id": index + 1,
+                "start_seconds": start,
+                "end_seconds": start + 4.0,
+                "duration_seconds": 4.0,
+                "action_score": 0.8 + 0.01 * (index % 3),
+                # The sentence crosses the visual cut at start + 4s.
+                "words": [
+                    {"start": start + 3.2, "end": start + 3.7, "word": "Keep"},
+                    {"start": start + 5.2, "end": start + 5.8, "word": "going."},
+                ],
+            })
+        result = build_temporal_segments(
+            shots, category="action", target_duration_sec=60.0,
+            video_duration=144.0,
+        )
+        self.assertGreaterEqual(result["actual_duration"], 54.0)
+        self.assertLessEqual(result["actual_duration"], 60.0)
+        self.assertGreater(result["duration_refill"]["reserved_count"], 0)
+        self.assertEqual(result["rejected_incomplete_segments"], 0)
+        self.assertTrue(all(seg["complete_utterance"] for seg in result["segments"]))
 
 if __name__ == "__main__":
     unittest.main()

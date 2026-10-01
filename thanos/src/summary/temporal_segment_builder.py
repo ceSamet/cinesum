@@ -10,10 +10,12 @@ from src.llm.narrative_reranker import rerank_narrative_shots
 from src.selection.narrative_selector import select_narrative_shots
 from src.selection.adaptive_diversity import select_adaptive
 from src.selection.three_act import ACT_QUOTAS, act_for, find_turning_points
+from src.summary.samet_speech_guard import load_turns, speech_safe_bounds
 from src.summary.speech_boundaries import (
     align_segment_boundaries,
     build_speech_context,
     describe_segment_window,
+    expand_to_complete_utterances,
     find_safe_budget_end,
 )
 
@@ -66,7 +68,7 @@ SUMMARY_DURATION_TOLERANCE = 0.10  # Internal candidate-sizing search width only
 # (targeted ASR, adjacent re-merge) so nothing downstream can push the real output
 # past the user's requested duration.
 CREDIT_EXCLUSION_THRESHOLD = 0.65  # scored_scene["credit_probability"] >= this -> excluded from every category
-SUMMARY_ALGORITHM_VERSION = "3.9.0"
+SUMMARY_ALGORITHM_VERSION = "3.10.0"
 SPEECH_PADDING_SEC = 0.45
 CONFLICT_BRIDGE_MIN_GAP_SEC = 90.0
 BALANCED_REGION_QUOTAS = {
@@ -698,6 +700,35 @@ def build_temporal_segments(
     resolved_video_duration = video_duration or max(
         (float(shot.get("end_seconds", 0.0)) for shot in smooth_shots), default=0.0,
     )
+    transcript_path = (
+        Path(base_dir) / "outputs" / "features" / "audio" / f"{video_alias}_transcript.json"
+        if base_dir is not None and video_alias else None
+    )
+    whole_turns = load_turns(transcript_path)
+
+    def charge_whole_turn_duration(segment: SummarySegment) -> SummarySegment:
+        """Apply the same speech-safe bounds used by the final export guard."""
+        if not whole_turns:
+            return segment
+        start, end = speech_safe_bounds(
+            segment.start, segment.end, whole_turns, resolved_video_duration
+        )
+        if start == segment.start and end == segment.end:
+            return segment
+        segment.start, segment.end = start, end
+        segment.aligned_start, segment.aligned_end = start, end
+        segment.duration = round(end - start, 3)
+        segment.start_delta = start - segment.original_start
+        segment.end_delta = end - segment.original_end
+        segment.boundary_reason += ",samet_whole_turn_precharged"
+        description = describe_segment_window(
+            start, end, smooth_shots, speech_context
+        )
+        segment.has_speech = description["has_speech"]
+        segment.transcript_text = description["transcript_text"]
+        segment.word_count = description["word_count"]
+        segment.complete_utterance = description["complete_utterance"]
+        return segment
     use_fixed_acts = category.lower() == "importance" and distribution_mode == "three_act"
     initial_turning_points = (
         find_turning_points(smooth_shots, resolved_video_duration)
@@ -916,7 +947,13 @@ def build_temporal_segments(
             s_end,
             smooth_shots,
             category=category,
-            max_segment_duration=max(max_seg_dur, min(50.0, s_end - s_start)) if seg.get("late_resolution_chain") else max_seg_dur,
+            max_segment_duration=(
+                max(max_seg_dur, s_end - s_start)
+                if category.lower() == "action"
+                else max(max_seg_dur, min(50.0, s_end - s_start))
+                if seg.get("late_resolution_chain")
+                else max_seg_dur
+            ),
             context=speech_context,
         )
         aligned_s = alignment["start"]
@@ -953,6 +990,24 @@ def build_temporal_segments(
             alignment["boundary_reason"] = (
                 f"{alignment['boundary_reason']},speech_padding_{SPEECH_PADDING_SEC:.2f}s"
             )
+
+        if alignment["has_speech"] and not alignment["complete_utterance"]:
+            repaired_s, repaired_e = expand_to_complete_utterances(
+                aligned_s, aligned_e, speech_context, resolved_video_duration,
+                padding=SPEECH_PADDING_SEC,
+            )
+            if repaired_e > repaired_s:
+                repaired_description = describe_segment_window(
+                    repaired_s, repaired_e, smooth_shots, speech_context
+                )
+                alignment.update(repaired_description)
+                aligned_s, aligned_e = repaired_s, repaired_e
+                alignment["start"] = aligned_s
+                alignment["end"] = aligned_e
+                alignment["start_delta"] = aligned_s - float(alignment["original_start"])
+                alignment["end_delta"] = aligned_e - float(alignment["original_end"])
+                alignment["boundary_mode"] = "whole_utterance"
+                alignment["boundary_reason"] += ",samet_whole_utterance_repair"
 
         # Calculate robust segment score (core shots weighted 60% max + 40% mean)
         c_scores = [shot_by_id[cid].get("smoothed_score", 0.0) for cid in seg["core_shot_ids"] if cid in shot_by_id]
@@ -1012,6 +1067,7 @@ def build_temporal_segments(
             hard_anchor_roles=seg.get("hard_anchor_roles", []),
             late_resolution_chain=bool(seg.get("late_resolution_chain", False)),
         )
+        summary_seg = charge_whole_turn_duration(summary_seg)
         if summary_seg.has_speech and not summary_seg.complete_utterance:
             rejected_incomplete_segments += 1
             if summary_seg.hard_anchor_roles:
@@ -1033,6 +1089,146 @@ def build_temporal_segments(
         key=lambda seg: (bool(seg.protected_narrative_chain), seg.segment_score),
         reverse=True,
     )
+
+    # Samet chooses against speech-safe costs; Gökdeniz's first pass chooses
+    # visual peaks against estimated costs. Once those peaks have been merged
+    # and aligned, the actual coverage can be much shorter than the request.
+    # Keep the primary/LLM choices first, then use high-scoring, non-overlapping
+    # shots as a duration reserve rather than returning a tiny highlight.
+    duration_refill: Dict[str, Any] = {
+        "strategy": "speech_safe_adaptive_reserve",
+        "candidate_count": 0,
+        "reserved_count": 0,
+    }
+    bounded_target = 0 < target_duration_sec < 9999
+    if category.lower() != "importance" and bounded_target:
+        occupied = sorted((seg.start, seg.end) for seg in candidate_summary_segments)
+        merged_occupied: List[List[float]] = []
+        for start, end in occupied:
+            if merged_occupied and start <= merged_occupied[-1][1]:
+                merged_occupied[-1][1] = max(end, merged_occupied[-1][1])
+            else:
+                merged_occupied.append([start, end])
+        covered = sum(end - start for start, end in merged_occupied)
+        # Even if the primary candidates nominally cover the budget, the
+        # final chooser may have to skip a long whole-turn clip. Keep a small
+        # reserve so that short summaries can still be filled safely.
+        remaining = max(
+            0.0, target_duration_sec - covered,
+            min(12.0, target_duration_sec * 0.40),
+        )
+        duration_refill["primary_covered_duration"] = round(covered, 3)
+        if remaining >= min_seg_dur:
+            primary_ids = {int(shot["scene_id"]) for shot in ranked_shots}
+            reserve_candidates: List[SummarySegment] = []
+            for shot in sorted(
+                eligible_shots,
+                key=lambda row: float(row.get("smoothed_score", 0.0)),
+                reverse=True,
+            ):
+                shot_id = int(shot["scene_id"])
+                if shot_id in primary_ids:
+                    continue
+                raw_start = max(0.0, float(shot["start_seconds"]) - pre_ctx)
+                raw_end = float(shot["end_seconds"]) + post_ctx
+                if raw_end - raw_start < min_seg_dur:
+                    needed = (min_seg_dur - (raw_end - raw_start)) / 2.0
+                    raw_start = max(0.0, raw_start - needed)
+                    raw_end += needed
+                snap_start, snap_end, core_ids, context_ids = snap_to_shot_boundaries(
+                    raw_start, raw_end, smooth_shots, resolved_video_duration
+                )
+                alignment = align_segment_boundaries(
+                    snap_start, snap_end, smooth_shots,
+                    category=category,
+                    max_segment_duration=max(max_seg_dur, snap_end - snap_start),
+                    context=speech_context,
+                )
+                start, end = float(alignment["start"]), float(alignment["end"])
+                if alignment["has_speech"]:
+                    start, end = expand_to_complete_utterances(
+                        start, end, speech_context, resolved_video_duration,
+                        padding=SPEECH_PADDING_SEC,
+                    )
+                description = describe_segment_window(
+                    start, end, smooth_shots, speech_context
+                )
+                if (
+                    end - start < min_seg_dur
+                    or end - start > target_duration_sec
+                    or (description["has_speech"] and not description["complete_utterance"])
+                ):
+                    continue
+                if any(start <= used_end + merge_gap and end >= used_start - merge_gap
+                       for used_start, used_end in occupied):
+                    continue
+                score = float(shot.get("smoothed_score", 0.0))
+                reserve_segment = SummarySegment(
+                    start=round(start, 3), end=round(end, 3),
+                    duration=round(end - start, 3), category=category,
+                    core_shot_ids=core_ids or [shot_id],
+                    context_shot_ids=context_ids,
+                    peak_score=round(float(shot.get("raw_score", score)), 4),
+                    segment_score=round(score, 4),
+                    has_speech=description["has_speech"],
+                    transcript_text=description["transcript_text"],
+                    reason=f"duration_refill_{category}",
+                    boundary_mode="whole_utterance" if description["has_speech"] else alignment["boundary_mode"],
+                    original_start=snap_start, original_end=snap_end,
+                    aligned_start=start, aligned_end=end,
+                    start_delta=start - snap_start, end_delta=end - snap_end,
+                    boundary_reason="samet_speech_safe_duration_refill",
+                    complete_utterance=description["complete_utterance"],
+                    word_count=description["word_count"],
+                    narrative_region=balanced_narrative_region(
+                        {"start_seconds": start, "end_seconds": end}, resolved_video_duration
+                    ),
+                )
+                reserve_segment = charge_whole_turn_duration(reserve_segment)
+                if reserve_segment.duration > target_duration_sec or (
+                    reserve_segment.has_speech and not reserve_segment.complete_utterance
+                ):
+                    continue
+                if any(reserve_segment.start <= used_end + merge_gap
+                       and reserve_segment.end >= used_start - merge_gap
+                       for used_start, used_end in occupied):
+                    continue
+                reserve_candidates.append(reserve_segment)
+            duration_refill["candidate_count"] = len(reserve_candidates)
+            reserve_budget = min(target_duration_sec, remaining * 1.15)
+            reserves, reserve_report = select_adaptive(
+                reserve_candidates,
+                budget_sec=reserve_budget,
+                score=lambda seg: seg.segment_score,
+                duration=lambda seg: seg.duration,
+                position=lambda seg: ((seg.start + seg.end) / 2) / max(resolved_video_duration, 0.001),
+                event_group=lambda seg: next(
+                    (shot_by_id[sid].get("story_scene_id") for sid in seg.core_shot_ids
+                     if sid in shot_by_id and shot_by_id[sid].get("story_scene_id") is not None),
+                    f"segment:{seg.start}",
+                ),
+            )
+            # The adaptive selector soft-penalizes duplicate events and time
+            # concentration; the final pass still charges exact, speech-safe
+            # durations and refuses overlapping intervals.
+            reserve_order = sorted(reserves, key=lambda item: item.segment_score, reverse=True)
+            reserve_order.extend(sorted(
+                (seg for seg in reserve_candidates if seg not in reserves),
+                key=lambda item: item.segment_score,
+                reverse=True,
+            ))
+            reserve_covered = 0.0
+            for seg in reserve_order:
+                if any(seg.start <= used_end + merge_gap and seg.end >= used_start - merge_gap
+                       for used_start, used_end in occupied):
+                    continue
+                candidate_summary_segments.append(seg)
+                occupied.append((seg.start, seg.end))
+                reserve_covered += seg.duration
+                duration_refill["reserved_count"] += 1
+                if reserve_covered >= remaining * 1.15:
+                    break
+            duration_refill["adaptive_selection"] = reserve_report
 
     # Step 6: Budget Optimizer & Cut Density Constraint
     # Target duration optimization: select best coherent segments up to target_duration_sec
@@ -1082,8 +1278,24 @@ def build_temporal_segments(
                 raise ValueError(
                     f"Zorunlu dönüm noktaları hedef süreye sığmıyor: en az {accumulated_dur:.1f} sn gerekiyor"
                 )
-        max_budget = target_duration_sec * (1.0 + SUMMARY_DURATION_TOLERANCE)
+        max_budget = (
+            target_duration_sec * (1.0 + SUMMARY_DURATION_TOLERANCE)
+            if category.lower() == "importance" else target_duration_sec
+        )
         max_allowed_segments = max(1, round(target_duration_sec / MIN_SECONDS_PER_SUMMARY_SEGMENT))
+
+        def merged_duration(rows: List[SummarySegment]) -> float:
+            intervals = sorted((item.start, item.end) for item in rows)
+            total = 0.0
+            merged_end = None
+            for start, end in intervals:
+                if merged_end is None or start > merged_end + merge_gap:
+                    total += end - start
+                    merged_end = end
+                elif end > merged_end:
+                    total += end - merged_end
+                    merged_end = end
+            return total
 
         for seg in candidate_summary_segments:
             if seg in selected_segments:
@@ -1092,9 +1304,12 @@ def build_temporal_segments(
                 break
 
             # Avoid adding tiny 1-second fragments just to hit exact budget
-            if (accumulated_dur + seg.duration) > max_budget:
+            projected_duration = merged_duration([*selected_segments, seg])
+            if projected_duration <= accumulated_dur + 0.001:
+                continue
+            if projected_duration > max_budget:
                 if accumulated_dur >= (target_duration_sec * 0.80):
-                    break
+                    continue
                 else:
                     # Fit at a safe speech/shot boundary; never cut at an arbitrary timestamp.
                     remaining = target_duration_sec - accumulated_dur
@@ -1122,7 +1337,9 @@ def build_temporal_segments(
                             final_end = trimmed_end
                             if trial_description["has_speech"]:
                                 final_end = min(
-                                    resolved_video_duration, trimmed_end + SPEECH_PADDING_SEC
+                                    resolved_video_duration,
+                                    trimmed_end + SPEECH_PADDING_SEC,
+                                    seg.start + remaining,
                                 )
                             seg.end = final_end
                             seg.aligned_end = seg.end
@@ -1142,12 +1359,20 @@ def build_temporal_segments(
                             seg.transcript_text = description["transcript_text"]
                             seg.word_count = description["word_count"]
                             seg.complete_utterance = description["complete_utterance"]
-                            selected_segments.append(seg)
-                            accumulated_dur += seg.duration
-                    break
+                            seg = charge_whole_turn_duration(seg)
+                            trimmed_total = merged_duration([*selected_segments, seg])
+                            if (
+                                (not seg.has_speech or seg.complete_utterance)
+                                and trimmed_total <= max_budget + 0.001
+                            ):
+                                selected_segments.append(seg)
+                                accumulated_dur = trimmed_total
+                    if accumulated_dur >= target_duration_sec:
+                        break
+                    continue
 
             selected_segments.append(seg)
-            accumulated_dur += seg.duration
+            accumulated_dur = projected_duration
 
             if accumulated_dur >= target_duration_sec:
                 break
@@ -1221,6 +1446,7 @@ def build_temporal_segments(
             if key != "selected_shots"
         },
         "post_alignment_balance": post_alignment_balance,
+        "duration_refill": duration_refill,
         "segments": [s.to_dict() for s in final_segments]
     }
 

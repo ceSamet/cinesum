@@ -4,6 +4,7 @@ from src.summary.speech_boundaries import (
     align_segment_boundaries,
     build_speech_context,
     enforce_duration_ceiling,
+    expand_to_complete_utterances,
     find_safe_budget_end,
 )
 
@@ -116,6 +117,16 @@ class TestSpeechBoundaries(unittest.TestCase):
         )
         self.assertEqual((result["start"], result["end"]), (1.0, 2.2))
         self.assertEqual(result["boundary_mode"], "word")
+
+    def test_action_repair_extends_visual_cut_to_whole_utterance(self):
+        words = [
+            {"start": 3.2, "end": 3.7, "word": "Keep"},
+            {"start": 5.2, "end": 5.8, "word": "going."},
+        ]
+        context = build_speech_context([make_shot(words, end=6.0)])
+        start, end = expand_to_complete_utterances(0.0, 4.0, context, 10.0)
+        self.assertEqual(start, 0.0)
+        self.assertGreater(end, 5.8)
 
     def test_sentence_expansion_respects_category_limit(self):
         words = [

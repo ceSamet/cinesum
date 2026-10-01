@@ -244,6 +244,46 @@ def describe_segment_window(
     }
 
 
+def expand_to_complete_utterances(
+    start: float,
+    end: float,
+    context: SpeechContext,
+    video_duration: float,
+    padding: float = 0.22,
+) -> tuple[float, float]:
+    """Keep a selected visual interval, extending its edges across whole speech turns.
+
+    Unlike the category-specific alignment policy, this is a final safety repair:
+    an action clip must not be discarded merely because a sentence crosses its
+    shot boundary. The expansion is charged to the actual duration budget later.
+    """
+    start = max(0.0, float(start))
+    end = min(float(video_duration), float(end))
+    utterances = context.utterances
+    for _ in range(len(utterances) + 1):
+        previous = start, end
+        for index, utterance in enumerate(utterances):
+            if not _overlaps(start, end, utterance):
+                continue
+            start = min(start, float(utterance["start"]))
+            end = max(end, float(utterance["end"]))
+            if not utterance.get("semantic_complete", True) and index + 1 < len(utterances):
+                continuation = utterances[index + 1]
+                gap = float(continuation["start"]) - float(utterance["end"])
+                if 0.0 <= gap <= CONTINUATION_GAP_SEC:
+                    end = max(end, float(continuation["end"]))
+        if (start, end) == previous:
+            break
+    # Add acoustic room only where doing so does not create a new, partial turn.
+    padded_start = max(0.0, start - padding)
+    padded_end = min(float(video_duration), end + padding)
+    if all(not _overlaps(padded_start, start, row) for row in utterances):
+        start = padded_start
+    if all(not _overlaps(end, padded_end, row) for row in utterances):
+        end = padded_end
+    return round(start, 3), round(end, 3)
+
+
 def _safe_end_at_or_before(
     context: SpeechContext,
     start: float,
@@ -524,12 +564,10 @@ def find_safe_budget_end(
         return None
 
     speech_words = [word for word in context.words if _overlaps(start, target, word)]
-    prefer_sentence = SPEECH_BOUNDARY_POLICIES.get(
-        category.lower(),
-        SPEECH_BOUNDARY_POLICIES["importance"],
-    )["prefer_sentence"]
 
-    if speech_words and prefer_sentence:
+    # Budget trimming is stricter than ordinary action alignment: a clipped
+    # sentence is not an acceptable way to fill the last few seconds.
+    if speech_words:
         utterance_ends = [
             float(utterance["end"])
             for utterance in context.utterances

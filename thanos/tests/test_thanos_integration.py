@@ -39,6 +39,20 @@ class TestThanosIntegration(unittest.TestCase):
                 self.assertFalse(start < row["start"] < end)
                 self.assertFalse(start < row["end"] < end)
 
+    def test_final_cut_prefers_a_near_full_whole_interval_subset(self):
+        rows = [
+            {"start": 0.0, "end": 16.1, "duration": 16.1, "segment_score": 0.6},
+            {"start": 40.0, "end": 47.3, "duration": 7.3, "segment_score": 0.67},
+            {"start": 80.0, "end": 91.6, "duration": 11.6, "segment_score": 0.75},
+        ]
+        result, report = guard_and_fit_segments(
+            rows, turns=[], video_duration=100.0, target_duration_sec=30.0,
+        )
+        self.assertEqual([row["start"] for row in result], [0.0, 80.0])
+        self.assertGreater(report["duration_after_fit"], 27.0)
+        self.assertLessEqual(report["duration_after_fit"], 30.0)
+        self.assertEqual(report["fit_strategy"], "whole_interval_duration_knapsack")
+
     def test_transcript_continuation_is_one_atomic_sentence(self):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "transcript.json"

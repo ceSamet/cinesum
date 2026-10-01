@@ -7,6 +7,7 @@ runs *after* Gökdeniz's alignment, targeted ASR and budget decisions.
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -100,22 +101,48 @@ def guard_and_fit_segments(
         row["start"], row["end"] = speech_safe_bounds(row["start"], row["end"], turns, video_duration)
         row["duration"] = round(row["end"] - row["start"], 3)
     before = round(sum(row["duration"] for row in ordered), 3)
+    fit_strategy = "within_budget"
     if 0 < target_duration_sec < 9999:
         if len(ordered) == 1 and ordered[0]["duration"] > target_duration_sec and not ordered[0].get("has_speech"):
             # A silent isolated peak may safely use the remaining time budget.
             row = ordered[0]
             row["end"] = round(min(row["end"], row["start"] + target_duration_sec), 3)
             row["duration"] = round(row["end"] - row["start"], 3)
-        while ordered and sum(row["duration"] for row in ordered) > target_duration_sec + 0.001:
-            removable = [row for row in ordered if not row.get("hard_anchor_roles")]
-            if not removable:
+        if sum(row["duration"] for row in ordered) > target_duration_sec + 0.001:
+            mandatory = [row for row in ordered if row.get("hard_anchor_roles")]
+            optional = [row for row in ordered if not row.get("hard_anchor_roles")]
+            mandatory_duration = sum(row["duration"] for row in mandatory)
+            if mandatory_duration > target_duration_sec + 0.001:
                 raise ValueError("Konuşma bütünlüğü ve zorunlu sahneler hedef süreye birlikte sığmıyor")
-            # Sacrifice the least useful whole interval, never half a sentence.
-            victim = min(removable, key=lambda row: (
-                float(row.get("segment_score", 0)) / max(float(row["duration"]), 0.1),
-                float(row.get("segment_score", 0)),
-            ))
-            ordered.remove(victim)
+
+            # A greedy weakest-clip deletion can turn a nearly full 30-second
+            # summary into 11 seconds. Select whole intervals by actual,
+            # speech-expanded duration; among equally full subsets, keep the
+            # higher-scoring material. Rounding costs upward keeps the hard cap.
+            tick = 0.1
+            budget = max(0, int((target_duration_sec - mandatory_duration + 0.000001) / tick))
+            states: list[tuple[float, int] | None] = [None] * (budget + 1)
+            states[0] = (0.0, 0)
+            for index, row in enumerate(optional):
+                cost = max(1, math.ceil((float(row["duration"]) - 0.000001) / tick))
+                if cost > budget:
+                    continue
+                value = max(0.0, float(row.get("segment_score", 0.0)))
+                for capacity in range(budget, cost - 1, -1):
+                    previous = states[capacity - cost]
+                    if previous is None:
+                        continue
+                    score = previous[0] + value
+                    current = states[capacity]
+                    if current is None or score > current[0] + 0.000001:
+                        states[capacity] = (score, previous[1] | (1 << index))
+            best = next((state for state in reversed(states) if state is not None), None)
+            chosen_mask = best[1] if best is not None else 0
+            ordered = sorted(
+                mandatory + [row for index, row in enumerate(optional) if chosen_mask & (1 << index)],
+                key=lambda row: float(row["start"]),
+            )
+            fit_strategy = "whole_interval_duration_knapsack"
     if not ordered:
         raise ValueError("Hedef süreye cümleyi bölmeden sığan sahne yok; süreyi artırın")
     return ordered, {
@@ -124,4 +151,5 @@ def guard_and_fit_segments(
         "duration_before_fit": before,
         "duration_after_fit": round(sum(row["duration"] for row in ordered), 3),
         "dropped_intervals": len(segments) - len(ordered),
+        "fit_strategy": fit_strategy,
     }
