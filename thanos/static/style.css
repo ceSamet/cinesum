@@ -974,4 +974,40 @@ input[type="range"] {
     color: #34d399;
 }
 
+.activity-panel {
+    margin-top: 18px;
+    text-align: left;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    padding-top: 14px;
+}
+.activity-heading {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    margin-bottom: 10px;
+}
+.activity-heading span { color: var(--text-muted); }
+.activity-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 230px;
+    overflow-y: auto;
+}
+.activity-item {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 0.78rem;
+}
+.activity-item.running { color: var(--accent-cyan); }
+.activity-item.completed { color: var(--accent-green); }
+.activity-item.failed { color: #f87171; }
+.activity-item small { display: block; color: var(--text-muted); margin-top: 2px; }
+.activity-item time { white-space: nowrap; color: var(--text-muted); }
+
 .hidden { display: none !important; }

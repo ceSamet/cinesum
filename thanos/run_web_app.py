@@ -6,8 +6,13 @@ from pathlib import Path
 def _relaunch_in_project_venv() -> None:
     """Use the shared Linux environment after the Samet/Gökdeniz merge."""
     base_dir = Path(__file__).resolve().parent
-    venv_python = base_dir.parent / ".venv" / "bin" / "python"
-    if not venv_python.exists():
+    candidates = (
+        base_dir.parent / ".venv" / "Scripts" / "python.exe",
+        base_dir.parent / "gokedniz" / "cinesum" / ".venv" / "Scripts" / "python.exe",
+        base_dir.parent / ".venv" / "bin" / "python",
+    ) if os.name == "nt" else (base_dir.parent / ".venv" / "bin" / "python",)
+    venv_python = next((candidate for candidate in candidates if candidate.exists()), None)
+    if venv_python is None:
         return
     try:
         current = Path(sys.executable).resolve()

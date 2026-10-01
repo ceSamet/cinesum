@@ -6,6 +6,7 @@ import uuid
 import re
 import threading
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -34,7 +35,8 @@ from src.summary.custom_query_summary import generate_custom_query_summary
 app = FastAPI(title="CineSum AI — Video Summarization Engine", version="1.0.0")
 
 # Mount Static Files & Directories (Including Dataset Video Directory)
-(BASE_DIR / "outputs").mkdir(exist_ok=True)
+(BASE_DIR / "outputs").mkdir(parents=True, exist_ok=True)
+(BASE_DIR / "dataset").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/outputs", StaticFiles(directory=str(BASE_DIR / "outputs")), name="outputs")
 app.mount("/dataset", StaticFiles(directory=str(BASE_DIR / "dataset")), name="dataset")
@@ -44,6 +46,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Global Task Progress Storage
 progress_store: Dict[str, Dict[str, Any]] = {}
+progress_store_lock = threading.Lock()
 analysis_locks: Dict[str, threading.Lock] = {}
 analysis_locks_guard = threading.Lock()
 
@@ -67,12 +70,30 @@ def _people_data(video_alias: str) -> Dict[str, Any]:
 
 def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: str = "", active_step: str = ""):
     if task_id:
-        progress_store[task_id] = {
-            "progress": progress,
-            "stage_desc": stage_desc,
-            "detail": detail,
-            "active_step": active_step,
-        }
+        now = time.time()
+        with progress_store_lock:
+            previous = progress_store.get(task_id, {})
+            events = list(previous.get("events", []))
+            if not events or (events[-1]["stage_desc"], events[-1]["detail"]) != (stage_desc, detail):
+                if events and events[-1]["status"] == "running":
+                    events[-1]["status"] = "completed"
+                    events[-1]["duration_sec"] = round(now - events[-1]["started_at"], 1)
+                events.append({
+                    "stage_desc": stage_desc,
+                    "detail": detail,
+                    "active_step": active_step,
+                    "started_at": now,
+                    "status": "failed" if progress == 0 else "completed" if progress >= 100 else "running",
+                })
+            progress_store[task_id] = {
+                "progress": progress,
+                "stage_desc": stage_desc,
+                "detail": detail,
+                "active_step": active_step,
+                "events": events[-100:],
+                "started_at": previous.get("started_at", now),
+                "updated_at": now,
+            }
 
 # Pydantic Schemas
 class SummarizeRequest(BaseModel):
@@ -159,12 +180,22 @@ async def get_task_progress(task_id: str):
     """
     Real-time Progress Polling Endpoint. NON-BLOCKING!
     """
-    prog = progress_store.get(task_id, {
+    fallback = {
         "progress": 5,
         "stage_desc": "Hazırlanıyor...",
         "detail": "Analiz başlatıldı",
-        "active_step": "stepScene"
-    })
+        "active_step": "stepScene",
+        "events": [],
+    }
+    with progress_store_lock:
+        prog = dict(progress_store.get(task_id, fallback))
+        prog["events"] = [dict(event) for event in prog["events"]]
+    now = time.time()
+    for event in prog["events"]:
+        if event["status"] == "running":
+            event["duration_sec"] = round(now - event["started_at"], 1)
+    if "started_at" in prog:
+        prog["elapsed_sec"] = round(now - prog["started_at"], 1)
     return prog
 
 def _sync_process_upload(dest_path: Path, new_alias: str, task_id: str, profile: str):

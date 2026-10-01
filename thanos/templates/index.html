@@ -155,7 +155,7 @@
                                 <span>Hedef Süre:</span>
                                 <span class="slider-val" id="durValueDisplay">30 saniye</span>
                             </div>
-                            <input type="range" id="durationSlider" min="10" max="120" step="5" value="30" oninput="updateDurationValue(this.value)">
+                            <input type="range" id="durationSlider" min="10" max="600" step="5" value="30" oninput="updateDurationValue(this.value)">
                         </div>
                     </div>
                 </div>
@@ -314,6 +314,13 @@
                 <div class="stage-step-item" id="stepExport">
                     <i class="fa-solid fa-film"></i> <span>4. FFmpeg Özet Kurgu</span>
                 </div>
+            </div>
+            <div class="activity-panel" aria-live="polite">
+                <div class="activity-heading">
+                    <strong>Canlı işlem günlüğü</strong>
+                    <span id="activityElapsed">0 sn</span>
+                </div>
+                <ol class="activity-list" id="activityList"></ol>
             </div>
         </div>
     </div>

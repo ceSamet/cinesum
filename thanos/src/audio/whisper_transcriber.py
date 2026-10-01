@@ -1,6 +1,7 @@
 import json
 import ctypes
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,6 +11,13 @@ _whisper_models: Dict[Tuple[str, str, str, str], Any] = {}
 
 def _cuda_runtime_ready() -> bool:
     """Torch seeing a GPU does not mean CTranslate2 can load CUDA libraries."""
+    if sys.platform == "win32":
+        try:
+            import ctranslate2
+
+            return ctranslate2.get_cuda_device_count() > 0
+        except (ImportError, RuntimeError, OSError):
+            return False
     try:
         ctypes.CDLL("libcublas.so.12")
         ctypes.CDLL("libcudnn.so.9")
