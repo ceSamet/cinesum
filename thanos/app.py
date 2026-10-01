@@ -428,6 +428,10 @@ def _sync_generate_summary(
         ]
         segment["actors"] = sorted({actor for row in overlapping for actor in row.get("actors", [])})
         segment["speakers"] = sorted({speaker for row in overlapping for speaker in row.get("speakers", [])})
+        segment["speaker_transcript"] = list({
+            (turn.get("start"), turn.get("end"), turn.get("speaker"), turn.get("text")): turn
+            for row in overlapping for turn in row.get("speaker_transcript", [])
+        }.values())
 
     update_task_progress(task_id, 100, "Özet Video Hazır!", f"{out_mp4_path.name}", "stepExport")
 

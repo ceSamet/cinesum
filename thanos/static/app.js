@@ -729,12 +729,18 @@ function renderTranscriptViewer(displayScenes) {
             count++;
             const row = document.createElement('div');
             row.className = 'transcript-row';
-            row.dataset.text = sc.transcript_text.toLowerCase();
-
-            row.innerHTML = `
-                <span class="time-tag">${sc.start_timecode}</span>
-                <span class="transcript-text-content">"${sc.transcript_text}"</span>
-            `;
+            const spoken = sc.speaker_transcript?.filter(turn => turn.text?.trim()) || [];
+            const labeledText = spoken.length
+                ? spoken.map(turn => `${turn.speaker}: ${turn.text}`).join(' · ')
+                : sc.transcript_text;
+            row.dataset.text = labeledText.toLowerCase();
+            const time = document.createElement('span');
+            time.className = 'time-tag';
+            time.textContent = sc.start_timecode;
+            const content = document.createElement('span');
+            content.className = 'transcript-text-content';
+            content.textContent = labeledText;
+            row.append(time, content);
 
             const seekSec = (currentViewMode === 'full') ? sc.start_seconds : accumulatedTime;
             row.addEventListener('click', () => seekToTimestamp(seekSec));

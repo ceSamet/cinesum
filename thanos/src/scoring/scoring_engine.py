@@ -315,6 +315,14 @@ def compute_scene_scores_for_video(
                 and float(turn.get("start", 0)) < float(sc["end_seconds"])
                 and turn.get("speaker")
             }),
+            "speaker_transcript": [
+                {"start": turn.get("start"), "end": turn.get("end"),
+                 "speaker": turn.get("speaker"), "text": turn.get("text")}
+                for turn in speaker_turns
+                if turn.get("text")
+                and float(turn.get("end", 0)) > float(sc["start_seconds"])
+                and float(turn.get("start", 0)) < float(sc["end_seconds"])
+            ],
             "start_timecode": sc["start_timecode"],
             "end_timecode": sc["end_timecode"],
             "start_seconds": sc["start_seconds"],

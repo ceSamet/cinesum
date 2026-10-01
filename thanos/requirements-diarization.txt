@@ -1,0 +1,4 @@
+# Optional Nezihat speaker diarization. Install with compatible Torch from
+# https://pytorch.org/get-started/locally/ before installing this file.
+pyannote-audio==4.0.7
+huggingface-hub>=0.36,<1

@@ -9,6 +9,7 @@ from src.audio.transcript_repair import (
     TRANSCRIPT_REPAIR_VERSION,
     repair_transcript_anomalies,
 )
+from src.audio.nezihat_diarization import INTEGRATION_VERSION, pyannote_available
 from src.audio.whisper_transcriber import (
     map_transcript_to_scenes,
     resolve_whisper_compute_type,
@@ -374,10 +375,14 @@ def analyze_video_features(
 
     people_cache_hit = False
     if os.getenv("THANOS_ENABLE_PEOPLE", "true").strip().lower() not in {"0", "false", "no"}:
+        diarization_backend = os.getenv("THANOS_DIARIZATION_BACKEND", "auto").strip().lower()
         people_config = {
-            "version": "samet-face-voice-1",
+            "version": "samet-face-nezihat-voice-2",
             "keyframes": stable_config_hash(keyframe_config),
             "transcript": stable_config_hash(transcript_repair_config),
+            "diarization_backend": diarization_backend,
+            "pyannote_ready": diarization_backend != "samet" and pyannote_available(),
+            "nezihat_version": INTEGRATION_VERSION,
         }
 
         def build_people():
@@ -394,11 +399,12 @@ def analyze_video_features(
                 result["status"] = "ok"
             except Exception as exc:
                 result = {"status": "unavailable", "reason": type(exc).__name__,
-                          "cast": [], "actors_by_scene": {}, "turns": []}
+                          "cast": [], "actors_by_scene": {}, "turns": [],
+                          "backend": "unavailable", "speaker_count": 0}
             _write_json(people_path, result)
             return result
 
-        _notify(progress_callback, 82, "Yüzler ve konuşmacılar eşleştiriliyor...", "Samet analizi", "stepAudio")
+        _notify(progress_callback, 82, "Yüzler ve konuşmacılar eşleştiriliyor...", "Nezihat / Samet analizi", "stepAudio")
         _, people_cache_hit, _ = _run_stage(
             manifest, "samet_people", people_config, [people_path], build_people,
             force=force or not keyframe_cache_hit or not transcript_repair_cache_hit,
