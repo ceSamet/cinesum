@@ -1,0 +1,84 @@
+flowchart TD
+    video[Kaynak video]
+    request[Kullanıcı özet isteği]
+
+    video --> cuts[Sahne geçişleri ve ana kareler]
+    video --> sound[Ses kanalını çıkarma]
+
+    cuts --> captions[Görsel sahne açıklamaları]
+    cuts --> faces[Yüz ve karakter kümeleri]
+    sound --> speech[Konuşma metni ve konuşmacılar]
+    sound --> events[Önemli ses olayları]
+
+    captions --> evidence[Çok modlu sahne kanıtı]
+    faces --> evidence
+    speech --> evidence
+    events --> evidence
+
+    evidence --> textEmbed[Metinsel anlam vektörleri]
+    evidence --> visualEmbed[Görsel benzerlik vektörleri]
+
+    textEmbed --> pairCompare[Ardışık iki cut karşılaştırılır]
+    visualEmbed --> pairCompare
+    faces --> pairCompare
+
+    pairCompare --> continuity[Devamlılık puanı<br/>Metin yüzde 52<br/>Görsel yüzde 25<br/>Karakter örtüşmesi yüzde 23]
+    continuity --> boundaryRules[Yeni olay kümesi koşulları<br/>Jenerik durumu değişti<br/>Küme en az 8 saniye ve puan 0.40 altı<br/>Küme 72 saniyeye ulaştı]
+    boundaryRules --> grouping[Doğal olay kümeleri<br/>Koşul yoksa aynı kümede devam]
+    grouping --> groupData[Olay kimliği<br/>Başlangıç ve bitiş<br/>Cut listesi<br/>Karakter ve içerik özeti]
+
+    evidence --> profile[İçerik profili çıkarımı]
+    profile --> profileTypes[Diyalog ağırlıklı<br/>Aksiyon ağırlıklı<br/>Atmosferik<br/>Çok karakterli<br/>Karma]
+
+    request --> intent[Prompt ve kesin filtre uygunluğu]
+
+    groupData --> scoring[Yerel sahne puanlama]
+    profile --> scoring
+    intent --> scoring
+    evidence --> scoring
+
+    scoring --> scoreParts[Konuşma<br/>Ses<br/>Karakter<br/>Görsel değişim<br/>Semantik özgünlük<br/>Olay sınırı]
+
+    scoreParts --> repeat[Bağlam ve tekrar denetimi]
+    groupData --> repeat
+    repeat --> repeatRules[Genel olayda ilk iki temsilci serbest<br/>Aksiyonda ilk üç temsilci serbest<br/>Yalnız gerçek benzerliğe ceza]
+
+    repeatRules --> diversity[Esnek dağılım denetimi]
+    diversity --> timeRule[On zaman penceresi<br/>Yalnız aşırı yığılmayı azaltır<br/>Zorunlu bölüm kotası yok]
+    diversity --> groupRule[Tek olay kümesinde<br/>azalan getiri]
+
+    timeRule --> firstSelect[İlk süre kısıtlı Knapsack]
+    groupRule --> firstSelect
+
+    firstSelect --> pool[Paralon aday havuzu]
+    groupData --> pool
+    textEmbed --> rag[Yerel SQLite RAG]
+    pool --> rag
+
+    rag --> paralon[Paralon içerik değerlendirmesi]
+    request --> paralon
+    profile --> paralon
+
+    paralon --> hybrid[Karma puan<br/>Yerel yüzde 42<br/>Paralon yüzde 58]
+    firstSelect --> fallback[Paralon başarısızsa<br/>yerel seçim korunur]
+
+    hybrid --> secondSelect[İkinci çeşitli Knapsack]
+    secondSelect --> safeCuts[Konuşmayı bölmeyen kesim sınırları]
+    fallback --> safeCuts
+
+    safeCuts --> ffmpeg[FFmpeg ile görüntü ve sesi birleştirme]
+    ffmpeg --> summary[Özet video]
+    secondSelect --> report[Sahne puanları ve seçim gerekçeleri]
+    fallback --> report
+
+    classDef input fill:#fff3cd,stroke:#9a6700,color:#332400
+    classDef analysis fill:#e8f1ff,stroke:#2f6fbb,color:#13294b
+    classDef selection fill:#f2e8ff,stroke:#7651a8,color:#2d1748
+    classDef llm fill:#e5f7ee,stroke:#27825b,color:#123d2c
+    classDef output fill:#ffe8e8,stroke:#b84b4b,color:#4d1919
+
+    class video,request input
+    class cuts,sound,captions,faces,speech,events,evidence,textEmbed,visualEmbed,pairCompare,continuity,boundaryRules,grouping,groupData,profile,profileTypes analysis
+    class intent,scoring,scoreParts,repeat,repeatRules,diversity,timeRule,groupRule,firstSelect selection
+    class pool,rag,paralon,hybrid,fallback,secondSelect llm
+    class safeCuts,ffmpeg,summary,report output

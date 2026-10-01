@@ -1,0 +1,12 @@
+-r requirements-light.txt
+torch>=2.5
+transformers>=4.49
+accelerate>=1.2
+sentencepiece>=0.2
+protobuf>=4.25
+huggingface-hub>=0.27
+faster-whisper>=1.1
+sentence-transformers>=3.3
+librosa>=0.10
+soundfile>=0.12
+onnxruntime>=1.20

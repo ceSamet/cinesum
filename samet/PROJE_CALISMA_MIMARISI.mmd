@@ -1,0 +1,62 @@
+flowchart TD
+    video["Kaynak video"]
+
+    subgraph analysis["1. Videoyu anlama"]
+        scenes["Sahne geçişlerini bul<br/>ve ana kareleri çıkar"]
+        visual["Görsel analiz<br/>sahne açıklaması ve karakterler"]
+        speech["Ses analizi<br/>konuşmalar, konuşmacılar ve ses olayları"]
+        records["Birleşik sahne kayıtları<br/>görüntü + replik + karakter + ses"]
+
+        scenes --> visual --> records
+        scenes --> speech --> records
+    end
+
+    video --> scenes
+
+    subgraph selection["2. RAG ve LLM ile sahne seçimi"]
+        localScore["Yerel sahne puanı<br/>konuşma, karakter, ses,<br/>görsel değişim ve anlatı konumu"]
+        embedding["Semantik embedding<br/>sahnelerin anlam vektörleri"]
+        rag[("Yerel SQLite RAG<br/>ilişkili sahneleri ve<br/>anlatı bağlarını getirir")]
+        firstKnapsack["İlk Knapsack<br/>süreye uyan güçlü adaylar"]
+        candidatePool["Aday havuzu<br/>ilk seçim + komşular +<br/>RAG ile ilişkili sahneler"]
+
+        batches["Adayları küçük gruplara ayır"]
+        llm27["Paralon Qwen 27B<br/>anlatısal önem ve bağlam puanı"]
+        llmFallback["Paralon hızlı model<br/>yalnız takılan grubu tamamlar"]
+        llmMerge["LLM kararlarını birleştir<br/>sahne + öncelik + gerekçe"]
+
+        hybrid["Hibrit puan<br/>yerel analiz %42 + LLM %58"]
+        finalKnapsack["Son Knapsack<br/>nihai sahneleri kesin<br/>süre bütçesine yerleştirir"]
+
+        records --> localScore --> firstKnapsack
+        records --> embedding --> rag
+        firstKnapsack --> candidatePool
+        rag --> candidatePool
+
+        candidatePool --> batches --> llm27
+        llm27 --> llmMerge
+        llm27 --> llmFallback --> llmMerge
+
+        localScore --> hybrid
+        llmMerge --> hybrid --> finalKnapsack
+    end
+
+    subgraph production["3. Özet videoyu üretme"]
+        safeCuts["Konuşmayı ortadan bölmeyen<br/>güvenli başlangıç ve bitişler"]
+        ffmpeg["FFmpeg<br/>seçilen parçaları sesleriyle<br/>keser ve birleştirir"]
+        output["Özet video<br/>H.264 görüntü + AAC ses"]
+
+        safeCuts --> ffmpeg --> output
+    end
+
+    finalKnapsack --> safeCuts
+
+    classDef source fill:#fff4dc,stroke:#d97706,color:#3b2f20;
+    classDef analysisNode fill:#eef6ff,stroke:#2563eb,color:#172554;
+    classDef intelligence fill:#f3e8ff,stroke:#7e22ce,color:#3b0764;
+    classDef result fill:#ecfdf5,stroke:#059669,color:#064e3b;
+
+    class video source;
+    class scenes,visual,speech,records analysisNode;
+    class localScore,embedding,rag,firstKnapsack,candidatePool,batches,llm27,llmFallback,llmMerge,hybrid,finalKnapsack intelligence;
+    class safeCuts,ffmpeg,output result;
