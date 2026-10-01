@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+output/
+input/
+.env
+*.log
+input/cars.mp4
+input/friends.mp4
+input/test.mp4
+input/test0.mp4
+input/test1.mp4
+input/test2.mp4
+input/test3.mp4
+input/yaprak_dokumu.mp4
