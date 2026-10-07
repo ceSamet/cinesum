@@ -31,7 +31,7 @@ ANALYSIS_PROFILES = {
     "balanced": AnalysisProfile(
         name="balanced",
         whisper_model="small",
-        whisper_beam_size=3,
+        whisper_beam_size=1,
         whisper_compute_type=None,
         clip_batch_size=None,
     ),

@@ -14,6 +14,10 @@ def _relaunch_in_project_venv() -> None:
     venv_python = next((candidate for candidate in candidates if candidate.exists()), None)
     if venv_python is None:
         return
+
+    venv_bin_dir = str(venv_python.parent.resolve())
+    if venv_bin_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{venv_bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
     try:
         current = Path(sys.executable).resolve()
         target = venv_python.resolve()

@@ -69,36 +69,70 @@ def export_summary_segments(
     ]
     if has_audio:
         command.extend(["-map", "[a]"])
-    command.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
+    def _get_fast_encoder_args() -> list[str]:
+        try:
+            res = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=2)
+            enc = res.stdout.lower()
+            if "h264_nvenc" in enc:
+                return ["-c:v", "h264_nvenc", "-preset", "p2", "-cq", "26"]
+            elif "h264_qsv" in enc:
+                return ["-c:v", "h264_qsv", "-preset", "veryfast"]
+            elif "h264_videotoolbox" in enc:
+                return ["-c:v", "h264_videotoolbox", "-q:v", "50"]
+        except Exception as e:
+            logger.warning(f"FFmpeg encoder check failed: {e}")
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+
+    encoder_args = _get_fast_encoder_args()
+    command_prefix = command.copy()
+    command.extend(encoder_args)
     if has_audio:
         command.extend(["-c:a", "aac"])
     temporary_output = output_p.with_name(f".{output_p.stem}.{os.getpid()}.part.mp4")
     command.extend(["-movflags", "+faststart", str(temporary_output)])
     if progress_callback:
         progress_callback(85, "Güvenli konuşma kesimleri kodlanıyor...", f"{len(segments)} aralık", "stepExport")
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    software_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+    command_suffix = command[len(command_prefix) + len(encoder_args):]
+    attempts = [encoder_args] + ([software_args] if encoder_args != software_args else [])
+    last_error = ""
     try:
-        while True:
+        for attempt_number, selected_encoder in enumerate(attempts):
             if cancel_check:
                 cancel_check()
+            if attempt_number:
+                logger.warning("Donanım kodlayıcısı açılamadı; CPU kodlayıcısına geçiliyor: %s", last_error[-300:])
+                temporary_output.unlink(missing_ok=True)
+            process = subprocess.Popen(
+                command_prefix + selected_encoder + command_suffix,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
             try:
-                _, stderr = process.communicate(timeout=0.5)
+                while True:
+                    if cancel_check:
+                        cancel_check()
+                    try:
+                        _, stderr = process.communicate(timeout=0.5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+            if process.returncode == 0 and temporary_output.exists():
+                if cancel_check:
+                    cancel_check()
+                temporary_output.replace(output_p)
                 break
-            except subprocess.TimeoutExpired:
-                continue
-        if process.returncode != 0 or not temporary_output.exists():
-            raise RuntimeError(f"FFmpeg özet üretimi başarısız: {stderr[-1200:]}")
-        if cancel_check:
-            cancel_check()
-        temporary_output.replace(output_p)
+            last_error = stderr[-1200:]
+        else:
+            raise RuntimeError(f"FFmpeg özet üretimi başarısız: {last_error}")
     except BaseException:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
         temporary_output.unlink(missing_ok=True)
         raise
 
