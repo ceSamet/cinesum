@@ -68,7 +68,21 @@ def export_summary_segments(
     ]
     if has_audio:
         command.extend(["-map", "[a]"])
-    command.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
+    def _get_fast_encoder_args() -> list[str]:
+        try:
+            res = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=2)
+            enc = res.stdout.lower()
+            if "h264_nvenc" in enc:
+                return ["-c:v", "h264_nvenc", "-preset", "p2", "-cq", "26"]
+            elif "h264_qsv" in enc:
+                return ["-c:v", "h264_qsv", "-preset", "veryfast"]
+            elif "h264_videotoolbox" in enc:
+                return ["-c:v", "h264_videotoolbox", "-q:v", "50"]
+        except Exception as e:
+            logger.warning(f"FFmpeg encoder check failed: {e}")
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+
+    command.extend(_get_fast_encoder_args())
     if has_audio:
         command.extend(["-c:a", "aac"])
     command.extend(["-movflags", "+faststart", str(output_p)])

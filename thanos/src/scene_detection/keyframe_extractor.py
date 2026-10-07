@@ -73,18 +73,23 @@ def extract_keyframes_for_scenes(
             best_score = -1.0
             best_frame = None
 
-            # Sample frames in window
-            for fn in range(w_start, w_end + 1, sample_step):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    continue
+            # Sample frames in window sequentially (much faster than seeking)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, w_start)
+            for fn in range(w_start, w_end + 1):
+                ret = cap.grab()
+                if not ret:
+                    break
+                
+                if (fn - w_start) % sample_step == 0:
+                    ret, frame = cap.retrieve()
+                    if not ret or frame is None:
+                        continue
 
-                score = calculate_blur_score(frame)
-                if score > best_score:
-                    best_score = score
-                    best_frame_num = fn
-                    best_frame = frame
+                    score = calculate_blur_score(frame)
+                    if score > best_score:
+                        best_score = score
+                        best_frame_num = fn
+                        best_frame = frame
 
             # If no frame matched, fallback to window start
             if best_frame is None:

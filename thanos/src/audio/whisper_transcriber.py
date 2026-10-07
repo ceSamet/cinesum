@@ -84,6 +84,7 @@ def get_whisper_model(
             model_source,
             device=resolved_device,
             compute_type=resolved_compute,
+            cpu_threads=8,
         )
     elif backend == "openai-whisper":
         import whisper
