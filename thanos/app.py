@@ -47,8 +47,55 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # Global Task Progress Storage
 progress_store: Dict[str, Dict[str, Any]] = {}
 progress_store_lock = threading.Lock()
+cancel_events: Dict[str, threading.Event] = {}
+TASK_DIR = BASE_DIR / "outputs" / "tasks"
+TASK_DIR.mkdir(parents=True, exist_ok=True)
 analysis_locks: Dict[str, threading.Lock] = {}
 analysis_locks_guard = threading.Lock()
+
+
+class TaskCancelled(Exception):
+    """The worker reached a safe cancellation point."""
+
+
+def _task_path(task_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+        raise HTTPException(status_code=400, detail="Geçersiz işlem kimliği.")
+    return TASK_DIR / f"{task_id}.json"
+
+
+def _save_task(task_id: str, record: Dict[str, Any]) -> None:
+    path = _task_path(task_id)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False, default=str), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_task(task_id: str) -> Dict[str, Any]:
+    try:
+        return json.loads(_task_path(task_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _cancel_checkpoint(task_id: str) -> None:
+    with progress_store_lock:
+        event = cancel_events.get(task_id)
+    if event and event.is_set():
+        raise TaskCancelled("İşlem kullanıcı tarafından iptal edildi.")
+
+
+def _finish_task(task_id: str, status: str, description: str, detail: str = "") -> None:
+    now = time.time()
+    with progress_store_lock:
+        record = progress_store.setdefault(task_id, _load_task(task_id))
+        record.update(status=status, stage_desc=description, detail=detail, updated_at=now)
+        if status == "completed":
+            record["progress"] = 100
+        elif status == "failed":
+            record["progress"] = 0
+        _save_task(task_id, record)
+        cancel_events.pop(task_id, None)
 
 
 async def run_in_threadpool(func, *args, **kwargs):
@@ -70,6 +117,7 @@ def _people_data(video_alias: str) -> Dict[str, Any]:
 
 def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: str = "", active_step: str = ""):
     if task_id:
+        _cancel_checkpoint(task_id)
         now = time.time()
         with progress_store_lock:
             previous = progress_store.get(task_id, {})
@@ -86,6 +134,7 @@ def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: s
                     "status": "failed" if progress == 0 else "completed" if progress >= 100 else "running",
                 })
             progress_store[task_id] = {
+                **previous,
                 "progress": progress,
                 "stage_desc": stage_desc,
                 "detail": detail,
@@ -93,7 +142,75 @@ def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: s
                 "events": events[-100:],
                 "started_at": previous.get("started_at", now),
                 "updated_at": now,
+                "status": previous.get("status", "running"),
             }
+            _save_task(task_id, progress_store[task_id])
+
+
+def set_task_metadata(task_id: str, **metadata: Any) -> None:
+    if task_id:
+        with progress_store_lock:
+            record = progress_store.setdefault(task_id, {"events": []})
+            record.update(metadata)
+            record["updated_at"] = time.time()
+            _save_task(task_id, record)
+
+
+def get_analysis_disk_status(video_alias: str) -> Dict[str, Any]:
+    """Recover an upload's stage even if its browser task ID was lost."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", video_alias):
+        raise HTTPException(status_code=400, detail="Geçersiz video alias'ı.")
+    video_path = BASE_DIR / "dataset" / "video" / f"{video_alias}.mp4"
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video bulunamadı.")
+
+    manifest_path = BASE_DIR / "outputs" / "manifests" / f"{video_alias}.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"video_alias": video_alias, "status": "not_started", "stage": None}
+
+    stages = manifest.get("stages", {})
+    order = ["scene_detection", "keyframes", "clip", "audio_extraction", "transcript",
+             "transcript_repair", "samet_people", "audio_features", "story_scenes"]
+    running = next((name for name in order if stages.get(name, {}).get("status") == "running"), None)
+    failed = next((name for name in order if stages.get(name, {}).get("status") == "failed"), None)
+    ready = (
+        get_analysis_artifact_status(BASE_DIR, video_alias)["ready"]
+        and stages.get("story_scenes", {}).get("status") == "complete"
+    )
+    stage = running or failed or next(
+        (name for name in order if name not in stages), "story_scenes"
+    )
+    status = "complete" if ready else "failed" if failed else "running" if running else "incomplete"
+    last_activity = float(manifest.get("updated_at_unix", 0))
+    response: Dict[str, Any] = {
+        "video_alias": video_alias,
+        "status": status,
+        "stage": stage,
+        "stages": {name: stages.get(name, {}).get("status", "pending") for name in order},
+        "scene_count": None,
+        "keyframes_done": None,
+        "keyframes_total": None,
+    }
+    scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{video_alias}_scenes.json"
+    try:
+        scenes = json.loads(scene_path.read_text(encoding="utf-8"))
+        response["scene_count"] = len(scenes)
+        response["keyframes_total"] = sum(
+            1 if float(row["duration_seconds"]) < 10.0 else 3
+            for row in scenes if int(row["end_frame"]) > int(row["start_frame"])
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+    if stage == "keyframes" or stages.get("keyframes", {}).get("status") == "complete":
+        frame_dir = BASE_DIR / "outputs" / "pyscenedetect" / "keyframes" / video_alias
+        frames = list(frame_dir.glob("*.jpg"))
+        response["keyframes_done"] = len(frames)
+        if frames:
+            last_activity = max(last_activity, max(frame.stat().st_mtime for frame in frames))
+    response["last_activity_sec"] = round(max(0.0, time.time() - last_activity), 1)
+    return response
 
 # Pydantic Schemas
 class SummarizeRequest(BaseModel):
@@ -188,8 +305,14 @@ async def get_task_progress(task_id: str):
         "events": [],
     }
     with progress_store_lock:
-        prog = dict(progress_store.get(task_id, fallback))
+        stored = progress_store.get(task_id) or _load_task(task_id)
+        if stored and task_id not in cancel_events and stored.get("status") in {"running", "cancel_requested"}:
+            stored["status"] = "interrupted"
+            stored["stage_desc"] = "Sunucu yeniden başladı; işlem durdu"
+            _save_task(task_id, stored)
+        prog = dict(stored or fallback)
         prog["events"] = [dict(event) for event in prog["events"]]
+        prog["found"] = bool(stored)
     now = time.time()
     for event in prog["events"]:
         if event["status"] == "running":
@@ -197,6 +320,66 @@ async def get_task_progress(task_id: str):
     if "started_at" in prog:
         prog["elapsed_sec"] = round(now - prog["started_at"], 1)
     return prog
+
+
+@app.get("/api/tasks")
+async def list_tasks():
+    tasks = []
+    for path in TASK_DIR.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        task_id = path.stem
+        if record.get("status") in {"running", "cancel_requested"} and task_id not in cancel_events:
+            record["status"] = "interrupted"
+            record["stage_desc"] = "Sunucu yeniden başladı; işlem durdu"
+            _save_task(task_id, record)
+        tasks.append({key: record.get(key) for key in (
+            "kind", "video_alias", "status", "stage_desc", "detail", "progress",
+            "started_at", "updated_at", "cancel_requested",
+        )} | {"id": task_id, "output_video_url": (record.get("result") or {}).get("output_video_url")})
+    known_outputs = {row["output_video_url"] for row in tasks if row.get("output_video_url")}
+    for video in (BASE_DIR / "outputs" / "summaries").glob("*.mp4"):
+        url = f"/outputs/summaries/{video.name}"
+        if url in known_outputs:
+            continue
+        modified = video.stat().st_mtime
+        match = re.match(r"(video\d+)_", video.stem)
+        tasks.append({
+            "id": f"legacy_{video.stem}", "kind": "summary", "video_alias": match.group(1) if match else None,
+            "status": "completed", "stage_desc": video.name, "detail": "Önceden üretilmiş özet",
+            "progress": 100, "started_at": modified, "updated_at": modified,
+            "output_video_url": url, "legacy": True,
+        })
+    tasks.sort(key=lambda row: row.get("updated_at") or 0, reverse=True)
+    return {"tasks": tasks[:100]}
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    _task_path(task_id)
+    with progress_store_lock:
+        record = progress_store.get(task_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Aktif işlem bulunamadı.")
+        if record.get("status") in {"completed", "failed", "cancelled"}:
+            return {"status": record["status"]}
+        event = cancel_events.get(task_id)
+        if not event:
+            raise HTTPException(status_code=409, detail="İşlem artık çalışmıyor.")
+        event.set()
+        record["status"] = "cancel_requested"
+        record["cancel_requested"] = True
+        record["stage_desc"] = "İptal istendi; güvenli durma noktası bekleniyor"
+        record["updated_at"] = time.time()
+        _save_task(task_id, record)
+    return {"status": "cancel_requested"}
+
+
+@app.get("/api/analysis-status/{video_alias}")
+async def analysis_status(video_alias: str):
+    return get_analysis_disk_status(video_alias)
 
 def _sync_process_upload(dest_path: Path, new_alias: str, task_id: str, profile: str):
     """
@@ -208,20 +391,24 @@ def _sync_process_upload(dest_path: Path, new_alias: str, task_id: str, profile:
         if status["ready"]:
             scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{new_alias}_scenes.json"
             story_path = BASE_DIR / "outputs" / "features" / "story" / f"{new_alias}_story_scenes.json"
-            return {
+            analysis = {
                 "scenes_found": len(json.loads(scene_path.read_text(encoding="utf-8"))),
                 "story_scenes_found": len(json.loads(story_path.read_text(encoding="utf-8")).get("story_scenes", [])) if story_path.exists() else 0,
                 "cache_hits": {"content_hash": True},
             }
-        return analyze_video_features(
-            video_alias=new_alias,
-            video_path=dest_path,
-            base_dir=BASE_DIR,
-            profile_name=profile,
-            progress_callback=lambda pct, desc, detail, step: update_task_progress(
-                task_id, pct, desc, detail, step
-            ),
-        )
+        else:
+            analysis = analyze_video_features(
+                video_alias=new_alias,
+                video_path=dest_path,
+                base_dir=BASE_DIR,
+                profile_name=profile,
+                cancel_check=lambda: _cancel_checkpoint(task_id),
+                progress_callback=lambda pct, desc, detail, step: update_task_progress(
+                    task_id, pct, desc, detail, step
+                ),
+            )
+        set_task_metadata(task_id, result={"success": True, "video_alias": new_alias})
+        return analysis
 
 @app.post("/api/upload")
 async def upload_and_process_video(
@@ -234,6 +421,7 @@ async def upload_and_process_video(
 
     if not task_id:
         task_id = str(uuid.uuid4())
+    _task_path(task_id)
 
     profile = profile.strip().lower()
     if profile not in ANALYSIS_PROFILES:
@@ -245,12 +433,16 @@ async def upload_and_process_video(
     video_dir = BASE_DIR / "dataset" / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    update_task_progress(task_id, 10, "Video dosyası kaydediliyor...", file.filename, "stepScene")
-    new_alias, dest_path, duplicate = await run_in_threadpool(
-        store_video, file.file, video_dir
-    )
-
+    with progress_store_lock:
+        cancel_events[task_id] = threading.Event()
     try:
+        set_task_metadata(task_id, kind="upload", filename=file.filename, status="running")
+        update_task_progress(task_id, 10, "Video dosyası kaydediliyor...", file.filename, "stepScene")
+        new_alias, dest_path, duplicate = await run_in_threadpool(
+            store_video, file.file, video_dir, cancel_check=lambda: _cancel_checkpoint(task_id)
+        )
+        _cancel_checkpoint(task_id)
+        set_task_metadata(task_id, video_alias=new_alias)
         status = get_analysis_artifact_status(BASE_DIR, new_alias)
         if duplicate and status["ready"]:
             scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{new_alias}_scenes.json"
@@ -268,7 +460,7 @@ async def upload_and_process_video(
                 _sync_process_upload, dest_path, new_alias, task_id, profile
             )
 
-        return {
+        result = {
             "success": True,
             "video_alias": new_alias,
             "filename": file.filename,
@@ -278,9 +470,15 @@ async def upload_and_process_video(
             "cache_hits": analysis["cache_hits"],
             "reused_video": duplicate,
         }
+        set_task_metadata(task_id, result=result)
+        _finish_task(task_id, "completed", "Video analizi hazır")
+        return result
+    except TaskCancelled as exc:
+        _finish_task(task_id, "cancelled", "İşlem iptal edildi", str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception as e:
         print(f"[HATA] Video analizinde hata: {e}")
-        update_task_progress(task_id, 0, "Hata oluştu", str(e), "")
+        _finish_task(task_id, "failed", "Hata oluştu", str(e))
         raise HTTPException(status_code=500, detail=f"Video analizi sırasında hata oluştu: {str(e)}")
 
 def _sync_generate_summary(
@@ -299,10 +497,12 @@ def _sync_generate_summary(
     v_mp4 = BASE_DIR / "dataset" / "video" / f"{video_alias}.mp4"
     summaries_dir = BASE_DIR / "outputs" / "summaries"
     summaries_dir.mkdir(parents=True, exist_ok=True)
+    set_task_metadata(task_id, kind="summary", video_alias=video_alias)
 
     analysis_performed = False
     analysis_result = None
     artifact_status = get_analysis_artifact_status(BASE_DIR, video_alias)
+    _cancel_checkpoint(task_id)
     if not artifact_status["ready"]:
         missing_label = ", ".join(artifact_status["missing"])
         update_task_progress(
@@ -332,6 +532,7 @@ def _sync_generate_summary(
                     video_path=v_mp4,
                     base_dir=BASE_DIR,
                     profile_name=analysis_profile,
+                    cancel_check=lambda: _cancel_checkpoint(task_id),
                     progress_callback=analysis_progress,
                 )
                 analysis_performed = True
@@ -340,6 +541,7 @@ def _sync_generate_summary(
 
     # Read scored scenes
     scored_scenes = compute_scene_scores_for_video(video_alias, BASE_DIR)
+    _cancel_checkpoint(task_id)
     debug_res: Dict[str, Any] = {}
 
     if category == "custom":
@@ -360,6 +562,7 @@ def _sync_generate_summary(
             progress_callback=p_cb,
             narrative_mode=narrative_mode,
             base_scored_scenes=scored_scenes,
+            cancel_check=lambda: _cancel_checkpoint(task_id),
         )
         out_mp4_path = Path(res["output_mp4_path"])
         selected_scenes = res["selected_scenes"]
@@ -385,6 +588,7 @@ def _sync_generate_summary(
             narrative_mode=narrative_mode,
             base_dir=BASE_DIR,
             video_alias=video_alias,
+            cancel_check=lambda: _cancel_checkpoint(task_id),
         )
 
         # Load generated debug segments JSON for UI timeline mapping
@@ -421,6 +625,7 @@ def _sync_generate_summary(
         all_scenes = scored_scenes
 
     for segment in selected_scenes:
+        _cancel_checkpoint(task_id)
         overlapping = [
             row for row in scored_scenes
             if float(row["end_seconds"]) > float(segment["start_seconds"])
@@ -433,10 +638,11 @@ def _sync_generate_summary(
             for row in overlapping for turn in row.get("speaker_transcript", [])
         }.values())
 
+    _cancel_checkpoint(task_id)
     update_task_progress(task_id, 100, "Özet Video Hazır!", f"{out_mp4_path.name}", "stepExport")
 
     relative_url = f"/outputs/summaries/{out_mp4_path.name}"
-    return {
+    result = {
         "success": True,
         "video_alias": video_alias,
         "category": category,
@@ -452,6 +658,9 @@ def _sync_generate_summary(
             "llm_selection", {"status": "disabled", "reason": "local_mode"}
         ),
     }
+    set_task_metadata(task_id, result=result)
+    _finish_task(task_id, "completed", "Özet video hazır", out_mp4_path.name)
+    return result
 
 @app.post("/api/summarize")
 async def generate_summary(req: SummarizeRequest):
@@ -459,6 +668,7 @@ async def generate_summary(req: SummarizeRequest):
     Generate custom video summary. NON-BLOCKING threadpool execution!
     """
     task_id = req.task_id or str(uuid.uuid4())
+    _task_path(task_id)
     video_alias = req.video_alias
     category = req.category.lower()
     custom_prompt = req.custom_prompt
@@ -484,7 +694,10 @@ async def generate_summary(req: SummarizeRequest):
     if not v_mp4.exists():
         raise HTTPException(status_code=404, detail=f"Video bulunamadı: {video_alias}")
 
+    with progress_store_lock:
+        cancel_events[task_id] = threading.Event()
     try:
+        set_task_metadata(task_id, kind="summary", video_alias=video_alias, category=category, status="running")
         update_task_progress(task_id, 10, "Yapay Zekâ Analizi Başlatılıyor...", f"Kategori: {category.upper()}", "stepScene")
 
         result = await run_in_threadpool(
@@ -499,9 +712,12 @@ async def generate_summary(req: SummarizeRequest):
         )
         return result
 
+    except TaskCancelled as exc:
+        _finish_task(task_id, "cancelled", "İşlem iptal edildi", str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
     except Exception as e:
         print(f"[HATA] Özetleme API hatası: {e}")
-        update_task_progress(task_id, 0, "Özetleme Hatası", str(e), "")
+        _finish_task(task_id, "failed", "Özetleme Hatası", str(e))
         raise HTTPException(status_code=500, detail=f"Özet üretilemedi: {str(e)}")
 
 if __name__ == "__main__":

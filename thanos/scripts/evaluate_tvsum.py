@@ -151,15 +151,34 @@ def f1(predicted: bytearray, gold: bytearray) -> float:
     return 2.0 * overlap / (pred_count + gold_count)
 
 
-def uniform_mask(nframes: int) -> bytearray:
-    """Non-learned, evenly distributed 15%-budget baseline."""
-    budget = int(BUDGET_PORTION * nframes)
-    shots = [(start, min(start + GOLD_SHOT_FRAMES, nframes)) for start in range(0, nframes, GOLD_SHOT_FRAMES)]
-    count = min(len(shots), budget // GOLD_SHOT_FRAMES)
-    chosen = [shots[round((i + 0.5) * len(shots) / count - 0.5)] for i in range(count)] if count else []
+def recall(predicted: bytearray, gold: bytearray) -> float:
+    """Fraction of human-reference frames covered by the predicted summary."""
+    if len(predicted) != len(gold):
+        raise ValueError("Recall için kare sayıları eşit olmalı")
+    gold_count = sum(gold)
+    return sum(a & b for a, b in zip(predicted, gold)) / gold_count if gold_count else 0.0
+
+
+def precision(predicted: bytearray, gold: bytearray) -> float:
+    """Fraction of predicted frames also present in the human reference."""
+    if len(predicted) != len(gold):
+        raise ValueError("Precision için kare sayıları eşit olmalı")
+    pred_count = sum(predicted)
+    return sum(a & b for a, b in zip(predicted, gold)) / pred_count if pred_count else 0.0
+
+
+def uniform_mask(nframes: int, target_frames: int | None = None) -> bytearray:
+    """Non-learned evenly distributed baseline, optionally duration-matched."""
+    budget = int(BUDGET_PORTION * nframes) if target_frames is None else min(target_frames, int(BUDGET_PORTION * nframes))
     mask = bytearray(nframes)
-    for start, end in chosen:
-        mask[start:end] = b"\x01" * (end - start)
+    if not budget:
+        return mask
+    count = math.ceil(budget / GOLD_SHOT_FRAMES)
+    for index in range(count):
+        length = min(GOLD_SHOT_FRAMES, budget - index * GOLD_SHOT_FRAMES)
+        midpoint = (index + 0.5) * nframes / count
+        start = max(0, min(nframes - length, round(midpoint - length / 2)))
+        mask[start:start + length] = b"\x01" * length
     return mask
 
 
@@ -275,6 +294,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             if selected_seconds > duration * BUDGET_PORTION + 0.05:
                 raise ValueError(f"%15 süre bütçesi aşıldı: {selected_seconds:.2f}/{duration * BUDGET_PORTION:.2f} sn")
             predicted = intervals_mask(segments, nframes, duration)
+            matched_baseline = uniform_mask(nframes, sum(predicted))
             results.append({
                 "video_id": video_id,
                 "category": row["category"],
@@ -284,7 +304,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "selected_sec": round(selected_seconds, 3),
                 "duration_ratio": round(sum(predicted) / nframes, 5),
                 "f1": round(mean(f1(predicted, user) for user in gold), 5),
+                "recall": round(mean(recall(predicted, user) for user in gold), 5),
+                "precision": round(mean(precision(predicted, user) for user in gold), 5),
                 "uniform_f1": baseline_f1,
+                "uniform_recall": round(mean(recall(baseline, user) for user in gold), 5),
+                "uniform_precision": round(mean(precision(baseline, user) for user in gold), 5),
+                "matched_uniform_f1": round(mean(f1(matched_baseline, user) for user in gold), 5),
                 "annotators": len(gold),
             })
             print(f"{video_id}: F1={results[-1]['f1']:.3f}, uniform={results[-1]['uniform_f1']:.3f}", flush=True)
@@ -294,11 +319,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "video_id": video_id, "category": row["category"], "status": "failed",
                 "source": str(path), "duration_sec": round(duration, 3),
                 "selected_sec": 0.0, "duration_ratio": 0.0, "f1": 0.0,
+                "recall": 0.0, "precision": 0.0,
                 "uniform_f1": baseline_f1, "annotators": len(gold),
+                "uniform_recall": round(mean(recall(baseline, user) for user in gold), 5),
+                "uniform_precision": round(mean(precision(baseline, user) for user in gold), 5),
+                "matched_uniform_f1": 0.0,
                 "error": errors[-1],
             })
             print(f"HATA {errors[-1]}", file=sys.stderr, flush=True)
     categories = sorted({row["category"] for row in results})
+    successful = [row for row in results if row["status"] == "ok"]
     report = {
         "protocol": "TVSum 60-frame gold shots, per-user 15% knapsack, frame-level F1, macro average",
         "model": ("Thanos importance end-to-end, " + args.narrative_mode if args.run_model else
@@ -312,6 +342,15 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "benchmark_complete": len(results) == 50,
         "mean_f1": round(mean(row["f1"] for row in results), 5) if results else None,
         "uniform_mean_f1": round(mean(row["uniform_f1"] for row in results), 5) if results else None,
+        "mean_f1_success_only": round(mean(row["f1"] for row in successful), 5) if successful else None,
+        "mean_recall_success_only": round(mean(row["recall"] for row in successful), 5) if successful else None,
+        "mean_precision_success_only": round(mean(row["precision"] for row in successful), 5) if successful else None,
+        "uniform_mean_f1_same_successes": round(mean(row["uniform_f1"] for row in successful), 5) if successful else None,
+        "uniform_mean_recall_same_successes": round(mean(row["uniform_recall"] for row in successful), 5) if successful else None,
+        "uniform_mean_precision_same_successes": round(mean(row["uniform_precision"] for row in successful), 5) if successful else None,
+        "matched_uniform_mean_f1_success_only": round(
+            mean(row["matched_uniform_f1"] for row in results if row["status"] == "ok"), 5,
+        ) if any(row["status"] == "ok" for row in results) else None,
         "by_category": {category: round(mean(row["f1"] for row in results if row["category"] == category), 5) for category in categories},
         "videos": results,
         "missing_video_ids": missing,

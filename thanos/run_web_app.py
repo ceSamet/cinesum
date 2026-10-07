@@ -14,7 +14,7 @@ def _relaunch_in_project_venv() -> None:
     venv_python = next((candidate for candidate in candidates if candidate.exists()), None)
     if venv_python is None:
         return
-        
+
     venv_bin_dir = str(venv_python.parent.resolve())
     if venv_bin_dir not in os.environ.get("PATH", ""):
         os.environ["PATH"] = f"{venv_bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -49,7 +49,7 @@ def launch_server():
     print("==================================================================")
 
     # Launch uvicorn web server
-    uvicorn.run("app:app", host=host, port=port, reload=False)
+    uvicorn.run("app:app", host=host, port=port, reload=False   )
 
 if __name__ == "__main__":
     launch_server()

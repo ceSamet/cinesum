@@ -22,6 +22,7 @@ def export_summary_segments(
     output_mp4_path: str = "summary.mp4",
     category: str = "importance",
     progress_callback: Optional[Callable[[int, str, str, str], None]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     """
     Exports coherent SummarySegment objects using continuous source interval cutting
@@ -82,26 +83,58 @@ def export_summary_segments(
             logger.warning(f"FFmpeg encoder check failed: {e}")
         return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
 
-    def _run_export_with_encoder(enc_args: list[str]):
-        run_cmd = list(command) + enc_args
-        if has_audio:
-            run_cmd.extend(["-c:a", "aac"])
-        run_cmd.extend(["-movflags", "+faststart", str(output_p)])
-        return subprocess.run(run_cmd, capture_output=True, text=True)
-
+    encoder_args = _get_fast_encoder_args()
+    command_prefix = command.copy()
+    command.extend(encoder_args)
+    if has_audio:
+        command.extend(["-c:a", "aac"])
+    temporary_output = output_p.with_name(f".{output_p.stem}.{os.getpid()}.part.mp4")
+    command.extend(["-movflags", "+faststart", str(temporary_output)])
     if progress_callback:
         progress_callback(85, "Güvenli konuşma kesimleri kodlanıyor...", f"{len(segments)} aralık", "stepExport")
-
-    primary_enc_args = _get_fast_encoder_args()
-    process = _run_export_with_encoder(primary_enc_args)
-
-    # If hardware encoder (like h264_nvenc with outdated driver) fails, seamlessly fallback to CPU libx264
-    if process.returncode != 0 and "libx264" not in primary_enc_args:
-        logger.warning("Hardware video encoder failed; falling back to libx264 ultrafast.")
-        process = _run_export_with_encoder(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
-
-    if process.returncode != 0 or not output_p.exists():
-        raise RuntimeError(f"FFmpeg özet üretimi başarısız: {process.stderr[-1200:]}")
+    software_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+    command_suffix = command[len(command_prefix) + len(encoder_args):]
+    attempts = [encoder_args] + ([software_args] if encoder_args != software_args else [])
+    last_error = ""
+    try:
+        for attempt_number, selected_encoder in enumerate(attempts):
+            if cancel_check:
+                cancel_check()
+            if attempt_number:
+                logger.warning("Donanım kodlayıcısı açılamadı; CPU kodlayıcısına geçiliyor: %s", last_error[-300:])
+                temporary_output.unlink(missing_ok=True)
+            process = subprocess.Popen(
+                command_prefix + selected_encoder + command_suffix,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                while True:
+                    if cancel_check:
+                        cancel_check()
+                    try:
+                        _, stderr = process.communicate(timeout=0.5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+            if process.returncode == 0 and temporary_output.exists():
+                if cancel_check:
+                    cancel_check()
+                temporary_output.replace(output_p)
+                break
+            last_error = stderr[-1200:]
+        else:
+            raise RuntimeError(f"FFmpeg özet üretimi başarısız: {last_error}")
+    except BaseException:
+        temporary_output.unlink(missing_ok=True)
+        raise
 
     if progress_callback:
         progress_callback(100, "Özet Video Hazır!", f"{output_p.name}", "stepExport")
@@ -118,6 +151,7 @@ def export_category_summary(
     narrative_mode: str = "local",
     base_dir: Optional[Path] = None,
     video_alias: Optional[str] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     """
     Main Entrypoint for category video summary export:
@@ -265,4 +299,5 @@ def export_category_summary(
         output_mp4_path=output_mp4_path,
         category=category,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )

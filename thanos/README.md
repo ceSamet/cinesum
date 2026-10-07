@@ -41,7 +41,7 @@ Video yükleme → SHA-256 ile aynı dosyayı bul/önbelleği kullan
 
 Analiz dosyaları `thanos/outputs/`, yüklenen videolar `thanos/dataset/video/` altındadır. İçerik hash'i aynı videonun yeniden yüklenmesinde eski alias'ı ve özellikleri kullanır. `THANOS_ENABLE_PEOPLE=false` yüz/konuşmacı aşamasını kapatır; diğer özetleme özellikleri çalışır. Bu dalın çıktısı `outputs/features/audio/*_people.json` ve isteğe bağlı `outputs/portraits/` altındadır.
 
-TVSum üzerinde %15 süre bütçeli, 20 anotatörlü F1 ölçümü için [değerlendirme rehberine](TVSUM_DEGERLENDIRME.md) bakın. Kaynak TVSum videoları anotasyonlardan ayrı gerekir; başka bir `video1.mp4` dosyası otomatik olarak TVSum sayılmaz.
+TVSum üzerinde %15 süre bütçeli, 20 anotatörlü F1 ölçümü için [değerlendirme rehberine](TVSUM_DEGERLENDIRME.md) ve [11 videoluk karşılaştırma raporuna](TVSUM_11_VIDEO_RAPORU.md) bakın. Kaynak TVSum videoları anotasyonlardan ayrı gerekir; başka bir `video1.mp4` dosyası otomatik olarak TVSum sayılmaz.
 
 ## Sınırlar ve doğrulama
 
