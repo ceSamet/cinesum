@@ -220,7 +220,8 @@ def select_scored_shots(shots: list[dict[str, Any]], nframes: int, duration: flo
 
 
 def generate_thanos_summary(path: Path, row: dict[str, str], target: float, profile: str, narrative_mode: str,
-                            *, score_only: bool = False, nframes: int = 0) -> list[dict[str, Any]]:
+                            *, score_only: bool = False, nframes: int = 0,
+                            output_dir: Path | None = None) -> list[dict[str, Any]]:
     """Run the same analysis + exporter used by the web app, including speech guard."""
     sys.path.insert(0, str(THANOS))
     from src.core.analysis_pipeline import analyze_video_features
@@ -232,7 +233,7 @@ def generate_thanos_summary(path: Path, row: dict[str, str], target: float, prof
     scored = compute_scene_scores_for_video(alias, THANOS)
     if score_only:
         return select_scored_shots(scored, nframes, video_duration(path))
-    output_dir = THANOS / "outputs" / "tvsum"
+    output_dir = output_dir or THANOS / "outputs" / "tvsum"
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / f"{row['video_id']}_importance_{int(target)}s_{narrative_mode}.mp4"
     export_category_summary(
@@ -275,7 +276,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             if args.run_model or args.score_only:
                 segments = generate_thanos_summary(
                     path, row, duration * BUDGET_PORTION, args.profile, args.narrative_mode,
-                    score_only=args.score_only, nframes=nframes,
+                    score_only=args.score_only, nframes=nframes, output_dir=args.output_dir,
                 )
             else:
                 prediction_path = args.predictions_dir / f"{video_id}.json"
@@ -372,6 +373,8 @@ def main() -> int:
     parser.add_argument("--profile", choices=("fast", "balanced", "quality"), default="balanced")
     parser.add_argument("--narrative-mode", choices=("local", "rag_llm"), default="local")
     parser.add_argument("--report", type=Path, default=THANOS / "outputs" / "tvsum" / "evaluation.json")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Üretilen MP4 ve debug dosyaları için ayrı klasör; eski karşılaştırmaları korur")
     args = parser.parse_args()
     if not args.videos_dir.is_dir():
         parser.error(f"Video klasörü bulunamadı: {args.videos_dir}")
