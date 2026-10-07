@@ -82,13 +82,24 @@ def export_summary_segments(
             logger.warning(f"FFmpeg encoder check failed: {e}")
         return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
 
-    command.extend(_get_fast_encoder_args())
-    if has_audio:
-        command.extend(["-c:a", "aac"])
-    command.extend(["-movflags", "+faststart", str(output_p)])
+    def _run_export_with_encoder(enc_args: list[str]):
+        run_cmd = list(command) + enc_args
+        if has_audio:
+            run_cmd.extend(["-c:a", "aac"])
+        run_cmd.extend(["-movflags", "+faststart", str(output_p)])
+        return subprocess.run(run_cmd, capture_output=True, text=True)
+
     if progress_callback:
         progress_callback(85, "Güvenli konuşma kesimleri kodlanıyor...", f"{len(segments)} aralık", "stepExport")
-    process = subprocess.run(command, capture_output=True, text=True)
+
+    primary_enc_args = _get_fast_encoder_args()
+    process = _run_export_with_encoder(primary_enc_args)
+
+    # If hardware encoder (like h264_nvenc with outdated driver) fails, seamlessly fallback to CPU libx264
+    if process.returncode != 0 and "libx264" not in primary_enc_args:
+        logger.warning("Hardware video encoder failed; falling back to libx264 ultrafast.")
+        process = _run_export_with_encoder(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
+
     if process.returncode != 0 or not output_p.exists():
         raise RuntimeError(f"FFmpeg özet üretimi başarısız: {process.stderr[-1200:]}")
 
