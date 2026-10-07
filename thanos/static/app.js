@@ -1,17 +1,35 @@
 // CineSum AI — Advanced Cinematic Frontend Logic with Dynamic Duration Slider Adaptation
 
 let selectedCategory = 'action';
-let selectedVideoAlias = 'video1';
+let selectedVideoAlias = '';
 let progressPollInterval = null;
+let diskProgressPollInterval = null;
+let processingModalDismissed = false;
+const diskSceneCache = new Map();
+const ACTIVE_TASK_KEY = 'cinesum_active_task_v1';
+const LAST_VIDEO_KEY = 'cinesum_last_video_v1';
 let aiAnalyticsChartInstance = null;
 let currentSummaryData = null;
 let currentViewMode = 'full'; // 'full' or 'summary'
 
 document.addEventListener('DOMContentLoaded', () => {
-    fetchAvailableVideos();
+    fetchAvailableVideos().then(restoreActiveWork);
     setupLiveHudListener();
     setupVideoSelectListener();
 });
+
+function readActiveTask() {
+    try { return JSON.parse(localStorage.getItem(ACTIVE_TASK_KEY) || 'null'); }
+    catch { return null; }
+}
+
+function saveActiveTask(task) {
+    localStorage.setItem(ACTIVE_TASK_KEY, JSON.stringify(task));
+}
+
+function clearActiveTask(taskId) {
+    if (!taskId || readActiveTask()?.id === taskId) localStorage.removeItem(ACTIVE_TASK_KEY);
+}
 
 // Generate unique task ID
 function generateTaskId() {
@@ -23,6 +41,7 @@ function setupVideoSelectListener() {
     const select = document.getElementById('videoSelect');
     select.addEventListener('change', (e) => {
         selectedVideoAlias = e.target.value;
+        localStorage.setItem(LAST_VIDEO_KEY, selectedVideoAlias);
         if (selectedVideoAlias) {
             loadVideoInfo(selectedVideoAlias);
         }
@@ -95,13 +114,17 @@ async function fetchAvailableVideos() {
                 opt.textContent = `${v} (${idx + 1}/${data.videos.length})`;
                 select.appendChild(opt);
             });
-            selectedVideoAlias = data.videos[0];
+            const preferred = selectedVideoAlias || localStorage.getItem(LAST_VIDEO_KEY);
+            selectedVideoAlias = data.videos.includes(preferred) ? preferred : data.videos[data.videos.length - 1];
+            select.value = selectedVideoAlias;
             await loadVideoInfo(selectedVideoAlias);
         } else {
             select.innerHTML = '<option value="">Hiç video bulunamadı</option>';
         }
+        return data.videos || [];
     } catch (err) {
         console.error('Video listesi alınamadı:', err);
+        return [];
     }
 }
 
@@ -216,7 +239,9 @@ function switchPlayerViewMode(mode) {
 }
 
 // Real-time Progress Polling Function
-function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyor") {
+function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyor", recovered = false) {
+    if (diskProgressPollInterval) clearInterval(diskProgressPollInterval);
+    diskProgressPollInterval = null;
     const modal = document.getElementById('processingModal');
     const titleEl = document.getElementById('modalTitle');
     const stageDescEl = document.getElementById('modalStageDesc');
@@ -237,15 +262,23 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
         if (el) el.className = 'stage-step-item';
     });
 
+    processingModalDismissed = false;
     modal.classList.remove('hidden');
+    document.getElementById('resumeProgressBtn')?.classList.remove('hidden');
 
     if (progressPollInterval) clearInterval(progressPollInterval);
 
-    progressPollInterval = setInterval(async () => {
+    const poll = async () => {
         try {
-            const res = await fetch(`/api/progress/${taskId}`);
+            const res = await fetch(`/api/progress/${encodeURIComponent(taskId)}`, { cache: 'no-store' });
             if (res.ok) {
                 const progData = await res.json();
+                if (recovered && !progData.found && !(progData.events || []).length) {
+                    stopProgressPolling(false);
+                    clearActiveTask(taskId);
+                    await restoreDiskWork();
+                    return;
+                }
 
                 const p = progData.progress || 0;
                 fillEl.style.width = `${p}%`;
@@ -296,20 +329,205 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
                         }
                     }
                 });
+                if (recovered && progData.result && progData.progress >= 100) {
+                    const task = readActiveTask();
+                    stopProgressPolling();
+                    clearActiveTask(taskId);
+                    if (task?.kind === 'summary') {
+                        currentSummaryData = progData.result;
+                        renderSummaryResult(progData.result);
+                        switchPlayerViewMode('summary');
+                    } else if (progData.result.video_alias) {
+                        await fetchAvailableVideos();
+                        selectedVideoAlias = progData.result.video_alias;
+                        localStorage.setItem(LAST_VIDEO_KEY, selectedVideoAlias);
+                        document.getElementById('videoSelect').value = selectedVideoAlias;
+                        await loadVideoInfo(selectedVideoAlias);
+                        switchTab('select');
+                    }
+                } else if (recovered && progData.progress === 0 && progData.events?.some(e => e.status === 'failed')) {
+                    stopProgressPolling();
+                    clearActiveTask(taskId);
+                    alert(`[HATA] ${progData.detail || 'İşlem tamamlanamadı.'}`);
+                }
             }
         } catch (e) {
             console.error('Progress polling hatası:', e);
         }
-    }, 300);
+    };
+    progressPollInterval = setInterval(poll, 1000);
+    poll();
 }
 
-function stopProgressPolling() {
+function stopProgressPolling(hideModal = true) {
     if (progressPollInterval) {
         clearInterval(progressPollInterval);
         progressPollInterval = null;
     }
+    if (hideModal) {
+        document.getElementById('processingModal').classList.add('hidden');
+        document.getElementById('resumeProgressBtn')?.classList.add('hidden');
+    }
+}
+
+const analysisStageNames = {
+    scene_detection: 'Sahneler belirleniyor',
+    keyframes: 'En net kareler çıkarılıyor',
+    clip: 'Görseller analiz ediliyor',
+    audio_extraction: 'Ses hazırlanıyor',
+    transcript: 'Konuşmalar yazıya dökülüyor',
+    transcript_repair: 'Konuşmalar düzeltiliyor',
+    samet_people: 'Kişiler ve konuşmacılar eşleştiriliyor',
+    audio_features: 'Ses özellikleri hesaplanıyor',
+    story_scenes: 'Hikâye sahneleri gruplanıyor',
+};
+
+async function fetchAnalysisStatus(alias) {
+    const route = `/api/analysis-status/${encodeURIComponent(alias)}`;
+    const response = await fetch(route, { cache: 'no-store' });
+    if (response.ok) return response.json();
+    // The already-running server may not have the new endpoint until its next restart.
+    const manifestResponse = await fetch(`/outputs/manifests/${encodeURIComponent(alias)}.json?at=${Date.now()}`, { cache: 'no-store' });
+    if (!manifestResponse.ok) return null;
+    const manifest = await manifestResponse.json();
+    const stages = manifest.stages || {};
+    const stage = Object.keys(analysisStageNames).find(name => stages[name]?.status === 'running');
+    const failed = Object.keys(analysisStageNames).find(name => stages[name]?.status === 'failed');
+    const lastStageComplete = stages.story_scenes?.status === 'complete';
+    if (!stage && !failed && !lastStageComplete) return null;
+    const status = {
+        video_alias: alias,
+        status: lastStageComplete ? 'complete' : failed ? 'failed' : 'running',
+        stage: stage || failed || 'story_scenes',
+        stages: Object.fromEntries(Object.keys(analysisStageNames).map(name => [name, stages[name]?.status || 'pending'])),
+        last_activity_sec: Math.max(0, Date.now() / 1000 - (manifest.updated_at_unix || 0)),
+    };
+    if (stage === 'keyframes') {
+        try {
+            if (!diskSceneCache.has(alias)) {
+                const scenesResponse = await fetch(`/outputs/pyscenedetect/scene_lists/${encodeURIComponent(alias)}_scenes.json`, { cache: 'no-store' });
+                diskSceneCache.set(alias, (await scenesResponse.json()).filter(row => row.end_frame > row.start_frame));
+            }
+            const scenes = diskSceneCache.get(alias);
+            let low = 0;
+            let high = scenes.length;
+            let newestFrameDate = null;
+            while (low < high) {
+                const mid = Math.ceil((low + high) / 2);
+                const sceneId = String(scenes[mid - 1].scene_id).padStart(3, '0');
+                const path = `/outputs/pyscenedetect/keyframes/${encodeURIComponent(alias)}/${encodeURIComponent(alias)}_scene_${sceneId}_kf1.jpg`;
+                const probe = await fetch(path, { method: 'HEAD', cache: 'no-store' });
+                if (probe.ok) {
+                    low = mid;
+                    newestFrameDate = probe.headers.get('Last-Modified');
+                } else {
+                    high = mid - 1;
+                }
+            }
+            status.scene_count = scenes.length;
+            status.keyframes_total = scenes.reduce((total, row) => total + (row.duration_seconds < 10 ? 1 : 3), 0);
+            status.keyframes_done = scenes.slice(0, low).reduce((total, row) => total + (row.duration_seconds < 10 ? 1 : 3), 0);
+            status.progress_estimated = true;
+            if (newestFrameDate) status.last_activity_sec = Math.max(0, (Date.now() - Date.parse(newestFrameDate)) / 1000);
+        } catch (error) { console.warn('Kare ilerlemesi tahmin edilemedi:', error); }
+    }
+    return status;
+}
+
+function showDiskStatus(status) {
     const modal = document.getElementById('processingModal');
-    modal.classList.add('hidden');
+    const stage = status.stage;
+    document.getElementById('modalTitle').textContent = `Video analizi: ${status.video_alias}`;
+    document.getElementById('modalStageDesc').textContent = analysisStageNames[stage] || 'Analiz sürüyor';
+    const done = status.keyframes_done;
+    const total = status.keyframes_total;
+    const fraction = stage === 'keyframes' && done != null && total > 0
+        ? Math.min(100, Math.round(done / total * 100)) : null;
+    document.getElementById('progressBarFill').style.width = `${fraction || 0}%`;
+    document.getElementById('progressPercent').textContent = fraction == null ? 'Aşama sürüyor' : `Kareler ${status.progress_estimated ? '≈' : ''}%${fraction}`;
+    document.getElementById('progressDetail').textContent = fraction == null
+        ? (status.scene_count ? `${status.scene_count} sahne, ${done != null ? `${done} kare hazır` : 'analiz sürüyor'}` : 'Durum kontrol ediliyor')
+        : `${done}/${total} kare kaydedildi`;
+    document.getElementById('activityElapsed').textContent = status.last_activity_sec > 120
+        ? `Son kayıt ${formatDuration(status.last_activity_sec)} önce`
+        : 'Canlı işlem';
+    const list = document.getElementById('activityList');
+    list.replaceChildren();
+    Object.entries(analysisStageNames).forEach(([name, label]) => {
+        const state = status.stages?.[name] || 'pending';
+        if (state === 'pending') return;
+        const item = document.createElement('li');
+        item.className = `activity-item ${state}`;
+        const icon = document.createElement('span');
+        icon.textContent = state === 'complete' ? '✓' : state === 'failed' ? '!' : '●';
+        const body = document.createElement('span');
+        body.textContent = label;
+        item.append(icon, body);
+        list.append(item);
+    });
+    const activeStep = stage === 'scene_detection' || stage === 'keyframes' ? 'stepScene'
+        : stage === 'clip' || stage === 'story_scenes' ? 'stepClip' : 'stepAudio';
+    const steps = ['stepScene', 'stepClip', 'stepAudio', 'stepExport'];
+    const activeIndex = steps.indexOf(activeStep);
+    steps.forEach((name, index) => {
+        document.getElementById(name).className = `stage-step-item ${index < activeIndex ? 'completed' : index === activeIndex ? 'active' : ''}`;
+    });
+    if (!processingModalDismissed) modal.classList.remove('hidden');
+    document.getElementById('resumeProgressBtn')?.classList.remove('hidden');
+}
+
+async function restoreDiskWork(videoAliases) {
+    const aliases = videoAliases || (await fetch('/api/videos').then(response => response.json())).videos || [];
+    for (const alias of [...aliases].reverse()) {
+        let status;
+        try { status = await fetchAnalysisStatus(alias); }
+        catch { continue; }
+        if (!status || status.status !== 'running') continue;
+        selectedVideoAlias = alias;
+        localStorage.setItem(LAST_VIDEO_KEY, alias);
+        document.getElementById('videoSelect').value = alias;
+        showDiskStatus(status);
+        if (diskProgressPollInterval) clearInterval(diskProgressPollInterval);
+        diskProgressPollInterval = setInterval(async () => {
+            try {
+                const latest = await fetchAnalysisStatus(alias);
+                if (latest?.status === 'complete') {
+                    clearInterval(diskProgressPollInterval);
+                    diskProgressPollInterval = null;
+                    document.getElementById('processingModal').classList.add('hidden');
+                    document.getElementById('resumeProgressBtn')?.classList.add('hidden');
+                    await loadVideoInfo(alias);
+                } else if (latest?.status === 'failed') {
+                    clearInterval(diskProgressPollInterval);
+                    diskProgressPollInterval = null;
+                    showDiskStatus(latest);
+                } else if (latest) {
+                    showDiskStatus(latest);
+                }
+            } catch (error) { console.warn('Analiz durumu alınamadı:', error); }
+        }, 2000);
+        return;
+    }
+    document.getElementById('processingModal').classList.add('hidden');
+}
+
+async function restoreActiveWork(videoAliases) {
+    const task = readActiveTask();
+    if (task?.id && task?.kind) {
+        startProgressPolling(task.id, task.title || 'İşlem sürüyor', true);
+        return;
+    }
+    await restoreDiskWork(videoAliases);
+}
+
+function hideProcessingModal() {
+    processingModalDismissed = true;
+    document.getElementById('processingModal').classList.add('hidden');
+}
+
+function showProcessingModal() {
+    processingModalDismissed = false;
+    document.getElementById('processingModal').classList.remove('hidden');
 }
 
 // Handle Drag & Drop Upload
@@ -318,6 +536,7 @@ async function handleFileUpload(files) {
     const file = files[0];
 
     const taskId = generateTaskId();
+    saveActiveTask({ id: taskId, kind: 'upload', title: 'Yeni Video Yükleniyor ve Analiz Ediliyor' });
     startProgressPolling(taskId, "Yeni Video Yükleniyor ve Analiz Ediliyor");
 
     const formData = new FormData();
@@ -331,6 +550,7 @@ async function handleFileUpload(files) {
 
         const data = await res.json();
         stopProgressPolling();
+        clearActiveTask(taskId);
 
         if (res.ok && data.success) {
             alert(`🎉 Video Başarıyla Yüklendi ve Analiz Edildi: ${data.video_alias}`);
@@ -338,25 +558,28 @@ async function handleFileUpload(files) {
             switchTab('select');
             document.getElementById('videoSelect').value = data.video_alias;
             selectedVideoAlias = data.video_alias;
+            localStorage.setItem(LAST_VIDEO_KEY, data.video_alias);
             await loadVideoInfo(data.video_alias);
         } else {
             alert(`[HATA] Video yüklenemedi: ${data.detail || data.message || 'Bilinmeyen hata'}`);
         }
     } catch (err) {
         stopProgressPolling();
-        alert(`[HATA] Yükleme sırasında ağ hatası: ${err}`);
+        alert(`[HATA] Bağlantı kesildi: ${err}. Sunucudaki işlem sürüyor olabilir; sayfayı yenileyerek durumunu görebilirsin.`);
     }
 }
 
 // Main Summarization Action Trigger
 async function triggerSummarization() {
     const taskId = generateTaskId();
-    startProgressPolling(taskId, "Özet Video Üretiliyor");
 
     const isSelectAll = document.getElementById('selectAllCheckbox').checked;
     const targetDur = isSelectAll ? 0 : parseFloat(document.getElementById('durationSlider').value);
     const customPrompt = document.getElementById('customPromptInput').value.trim();
     const narrativeMode = document.getElementById('narrativeAiCheckbox').checked ? 'rag_llm' : 'local';
+
+    saveActiveTask({ id: taskId, kind: 'summary', title: 'Özet Video Üretiliyor', videoAlias: selectedVideoAlias });
+    startProgressPolling(taskId, "Özet Video Üretiliyor");
 
     const payload = {
         task_id: taskId,
@@ -376,6 +599,7 @@ async function triggerSummarization() {
 
         const data = await res.json();
         stopProgressPolling();
+        clearActiveTask(taskId);
 
         if (res.ok && data.success) {
             currentSummaryData = data;
@@ -386,7 +610,7 @@ async function triggerSummarization() {
         }
     } catch (err) {
         stopProgressPolling();
-        alert(`[HATA] Sunucuyla iletişim hatası: ${err}`);
+        alert(`[HATA] Bağlantı kesildi: ${err}. Sunucudaki işlem sürüyor olabilir; sayfayı yenileyerek durumunu görebilirsin.`);
     }
 }
 
@@ -729,12 +953,18 @@ function renderTranscriptViewer(displayScenes) {
             count++;
             const row = document.createElement('div');
             row.className = 'transcript-row';
-            row.dataset.text = sc.transcript_text.toLowerCase();
-
-            row.innerHTML = `
-                <span class="time-tag">${sc.start_timecode}</span>
-                <span class="transcript-text-content">"${sc.transcript_text}"</span>
-            `;
+            const spoken = sc.speaker_transcript?.filter(turn => turn.text?.trim()) || [];
+            const labeledText = spoken.length
+                ? spoken.map(turn => `${turn.speaker}: ${turn.text}`).join(' · ')
+                : sc.transcript_text;
+            row.dataset.text = labeledText.toLowerCase();
+            const time = document.createElement('span');
+            time.className = 'time-tag';
+            time.textContent = sc.start_timecode;
+            const content = document.createElement('span');
+            content.className = 'transcript-text-content';
+            content.textContent = labeledText;
+            row.append(time, content);
 
             const seekSec = (currentViewMode === 'full') ? sc.start_seconds : accumulatedTime;
             row.addEventListener('click', () => seekToTimestamp(seekSec));

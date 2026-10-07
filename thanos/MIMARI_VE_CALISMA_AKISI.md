@@ -1,6 +1,6 @@
 # Thanos mimarisi ve çalışma akışı
 
-Bu belge `thanos/` dizinindeki **mevcut kodun** bir videoyu nasıl analiz edip özet MP4'e dönüştürdüğünü anlatır. Thanos, Gökdeniz'in CineSum analiz/StoryScene/RAG hattını ve Samet'in içerik odaklı çeşitlilik seçimi, tam konuşma turu koruması, yüz-konuşmacı eşleştirmesi ve sesli video kesimini bir araya getirir. `samet/` ve `gokedniz/` kaynak dizinleri çalışma sırasında değiştirilmez. Nezihat'ın ayrı Whisper katkısı henüz bu hatta bağlı değildir.
+Bu belge `thanos/` dizinindeki **mevcut kodun** bir videoyu nasıl analiz edip özet MP4'e dönüştürdüğünü anlatır. Thanos, Gökdeniz'in CineSum analiz/StoryScene/RAG hattını, Samet'in içerik odaklı çeşitlilik seçimi, tam konuşma turu koruması ve yüz eşleştirmesini, Nezihat'ın pyannote konuşmacı ayrımı ve kelime düzeyinde konuşmacı atamasını bir araya getirir. `samet/`, `gokedniz/` ve `nezihat/` kaynak dizinleri çalışma sırasında değiştirilmez.
 
 ## Bir bakışta
 
@@ -56,7 +56,7 @@ Analiz sırası `src/core/analysis_pipeline.py` içindedir:
 2. **Ana kareler:** Her cut için görsel örnekleri çıkarır (`outputs/pyscenedetect/keyframes/`).
 3. **CLIP:** Ana kare embedding'lerini üretir (`outputs/features/visual/*.npy` ve metadata JSON).
 4. **FFmpeg + Faster-Whisper:** Sesi 16 kHz mono WAV'a ayırır; zaman kodlu, kelime düzeyinde transkript üretir. Uzun/anormal bloklar ayrıca onarılır (`outputs/features/audio/*_transcript_raw.json`, `*_transcript.json`). `fast` ve `balanced` profilleri `small`, `quality` profili `medium` Whisper kullanır.
-5. **İsteğe bağlı Samet yüz/konuşmacı katmanı:** Yüzleri ve ses kümelerini yaklaşık karakter/konuşmacı kimliklerine bağlar (`*_people.json`). `THANOS_ENABLE_PEOPLE=false` ile kapatılabilir; özetleme çekirdeği çalışmayı sürdürür.
+5. **Kişi katmanı:** Samet yüzleri kümeler; Nezihat'ın `pyannote/speaker-diarization-community-1` modeli erişilebiliyorsa örtüşen konuşmaları ve tekil konuşmacı zamanlarını çıkarır. Ses embedding'leri yanlış konuşmacı etiketlerini temkinli biçimde düzeltir; Whisper kelimeleri süre örtüşmesi ve geçiş cezasıyla konuşmacıya atanır. Pyannote hazır değilse Samet MFCC kümelemesi kullanılır (`*_people.json`). `THANOS_ENABLE_PEOPLE=false` ile kapatılabilir; özetleme çekirdeği çalışmayı sürdürür.
 6. **Sahne başına ses özellikleri:** Enerji, konuşma oranı, kelime sayısı ve transkriptleri cut zamanlarına eşler (`*_audio_features.json`).
 7. **StoryScene:** Komşu cut'ların görsel, metinsel, konuşma ve zamansal devamlılığını kullanarak daha büyük doğal olay kümeleri ve embedding'ler oluşturur (`outputs/features/story/`). Devamlılık ağırlıkları sırasıyla 0,52 / 0,28 / 0,12 / 0,08'dir; bir küme en fazla 45 saniye ve 12 cut ile sınırlandırılır.
 

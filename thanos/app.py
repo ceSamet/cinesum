@@ -86,6 +86,7 @@ def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: s
                     "status": "failed" if progress == 0 else "completed" if progress >= 100 else "running",
                 })
             progress_store[task_id] = {
+                **previous,
                 "progress": progress,
                 "stage_desc": stage_desc,
                 "detail": detail,
@@ -94,6 +95,69 @@ def update_task_progress(task_id: str, progress: int, stage_desc: str, detail: s
                 "started_at": previous.get("started_at", now),
                 "updated_at": now,
             }
+
+
+def set_task_metadata(task_id: str, **metadata: Any) -> None:
+    if task_id:
+        with progress_store_lock:
+            progress_store.setdefault(task_id, {"events": []}).update(metadata)
+
+
+def get_analysis_disk_status(video_alias: str) -> Dict[str, Any]:
+    """Recover an upload's stage even if its browser task ID was lost."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", video_alias):
+        raise HTTPException(status_code=400, detail="Geçersiz video alias'ı.")
+    video_path = BASE_DIR / "dataset" / "video" / f"{video_alias}.mp4"
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video bulunamadı.")
+
+    manifest_path = BASE_DIR / "outputs" / "manifests" / f"{video_alias}.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"video_alias": video_alias, "status": "not_started", "stage": None}
+
+    stages = manifest.get("stages", {})
+    order = ["scene_detection", "keyframes", "clip", "audio_extraction", "transcript",
+             "transcript_repair", "samet_people", "audio_features", "story_scenes"]
+    running = next((name for name in order if stages.get(name, {}).get("status") == "running"), None)
+    failed = next((name for name in order if stages.get(name, {}).get("status") == "failed"), None)
+    ready = (
+        get_analysis_artifact_status(BASE_DIR, video_alias)["ready"]
+        and stages.get("story_scenes", {}).get("status") == "complete"
+    )
+    stage = running or failed or next(
+        (name for name in order if name not in stages), "story_scenes"
+    )
+    status = "complete" if ready else "failed" if failed else "running" if running else "incomplete"
+    last_activity = float(manifest.get("updated_at_unix", 0))
+    response: Dict[str, Any] = {
+        "video_alias": video_alias,
+        "status": status,
+        "stage": stage,
+        "stages": {name: stages.get(name, {}).get("status", "pending") for name in order},
+        "scene_count": None,
+        "keyframes_done": None,
+        "keyframes_total": None,
+    }
+    scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{video_alias}_scenes.json"
+    try:
+        scenes = json.loads(scene_path.read_text(encoding="utf-8"))
+        response["scene_count"] = len(scenes)
+        response["keyframes_total"] = sum(
+            1 if float(row["duration_seconds"]) < 10.0 else 3
+            for row in scenes if int(row["end_frame"]) > int(row["start_frame"])
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+    if stage == "keyframes" or stages.get("keyframes", {}).get("status") == "complete":
+        frame_dir = BASE_DIR / "outputs" / "pyscenedetect" / "keyframes" / video_alias
+        frames = list(frame_dir.glob("*.jpg"))
+        response["keyframes_done"] = len(frames)
+        if frames:
+            last_activity = max(last_activity, max(frame.stat().st_mtime for frame in frames))
+    response["last_activity_sec"] = round(max(0.0, time.time() - last_activity), 1)
+    return response
 
 # Pydantic Schemas
 class SummarizeRequest(BaseModel):
@@ -190,6 +254,7 @@ async def get_task_progress(task_id: str):
     with progress_store_lock:
         prog = dict(progress_store.get(task_id, fallback))
         prog["events"] = [dict(event) for event in prog["events"]]
+        prog["found"] = task_id in progress_store
     now = time.time()
     for event in prog["events"]:
         if event["status"] == "running":
@@ -197,6 +262,11 @@ async def get_task_progress(task_id: str):
     if "started_at" in prog:
         prog["elapsed_sec"] = round(now - prog["started_at"], 1)
     return prog
+
+
+@app.get("/api/analysis-status/{video_alias}")
+async def analysis_status(video_alias: str):
+    return get_analysis_disk_status(video_alias)
 
 def _sync_process_upload(dest_path: Path, new_alias: str, task_id: str, profile: str):
     """
@@ -208,20 +278,23 @@ def _sync_process_upload(dest_path: Path, new_alias: str, task_id: str, profile:
         if status["ready"]:
             scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{new_alias}_scenes.json"
             story_path = BASE_DIR / "outputs" / "features" / "story" / f"{new_alias}_story_scenes.json"
-            return {
+            analysis = {
                 "scenes_found": len(json.loads(scene_path.read_text(encoding="utf-8"))),
                 "story_scenes_found": len(json.loads(story_path.read_text(encoding="utf-8")).get("story_scenes", [])) if story_path.exists() else 0,
                 "cache_hits": {"content_hash": True},
             }
-        return analyze_video_features(
-            video_alias=new_alias,
-            video_path=dest_path,
-            base_dir=BASE_DIR,
-            profile_name=profile,
-            progress_callback=lambda pct, desc, detail, step: update_task_progress(
-                task_id, pct, desc, detail, step
-            ),
-        )
+        else:
+            analysis = analyze_video_features(
+                video_alias=new_alias,
+                video_path=dest_path,
+                base_dir=BASE_DIR,
+                profile_name=profile,
+                progress_callback=lambda pct, desc, detail, step: update_task_progress(
+                    task_id, pct, desc, detail, step
+                ),
+            )
+        set_task_metadata(task_id, result={"success": True, "video_alias": new_alias})
+        return analysis
 
 @app.post("/api/upload")
 async def upload_and_process_video(
@@ -249,6 +322,7 @@ async def upload_and_process_video(
     new_alias, dest_path, duplicate = await run_in_threadpool(
         store_video, file.file, video_dir
     )
+    set_task_metadata(task_id, kind="upload", video_alias=new_alias)
 
     try:
         status = get_analysis_artifact_status(BASE_DIR, new_alias)
@@ -268,7 +342,7 @@ async def upload_and_process_video(
                 _sync_process_upload, dest_path, new_alias, task_id, profile
             )
 
-        return {
+        result = {
             "success": True,
             "video_alias": new_alias,
             "filename": file.filename,
@@ -278,6 +352,8 @@ async def upload_and_process_video(
             "cache_hits": analysis["cache_hits"],
             "reused_video": duplicate,
         }
+        set_task_metadata(task_id, result=result)
+        return result
     except Exception as e:
         print(f"[HATA] Video analizinde hata: {e}")
         update_task_progress(task_id, 0, "Hata oluştu", str(e), "")
@@ -299,6 +375,7 @@ def _sync_generate_summary(
     v_mp4 = BASE_DIR / "dataset" / "video" / f"{video_alias}.mp4"
     summaries_dir = BASE_DIR / "outputs" / "summaries"
     summaries_dir.mkdir(parents=True, exist_ok=True)
+    set_task_metadata(task_id, kind="summary", video_alias=video_alias)
 
     analysis_performed = False
     analysis_result = None
@@ -428,11 +505,15 @@ def _sync_generate_summary(
         ]
         segment["actors"] = sorted({actor for row in overlapping for actor in row.get("actors", [])})
         segment["speakers"] = sorted({speaker for row in overlapping for speaker in row.get("speakers", [])})
+        segment["speaker_transcript"] = list({
+            (turn.get("start"), turn.get("end"), turn.get("speaker"), turn.get("text")): turn
+            for row in overlapping for turn in row.get("speaker_transcript", [])
+        }.values())
 
     update_task_progress(task_id, 100, "Özet Video Hazır!", f"{out_mp4_path.name}", "stepExport")
 
     relative_url = f"/outputs/summaries/{out_mp4_path.name}"
-    return {
+    result = {
         "success": True,
         "video_alias": video_alias,
         "category": category,
@@ -448,6 +529,8 @@ def _sync_generate_summary(
             "llm_selection", {"status": "disabled", "reason": "local_mode"}
         ),
     }
+    set_task_metadata(task_id, result=result)
+    return result
 
 @app.post("/api/summarize")
 async def generate_summary(req: SummarizeRequest):

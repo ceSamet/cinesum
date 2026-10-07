@@ -28,6 +28,10 @@ class TestWhisperSceneMapping(unittest.TestCase):
             self.assertEqual(resolve_whisper_device(), "cpu")
 
     def test_windows_cuda_uses_ctranslate2_device_count(self):
+        # Import before mocking sys.platform: a fresh import would otherwise
+        # try Windows-only DLL setup on the Linux test runner.
+        import ctranslate2  # noqa: F401
+
         with patch("src.audio.whisper_transcriber.sys.platform", "win32"), patch(
             "ctranslate2.get_cuda_device_count", return_value=1
         ), patch("torch.cuda.is_available", return_value=True), patch.dict(

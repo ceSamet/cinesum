@@ -30,6 +30,7 @@
             <span class="logo-text">Cine<span class="highlight">Sum</span> AI</span>
         </div>
         <div class="nav-badges">
+            <button class="progress-resume-btn hidden" id="resumeProgressBtn" type="button" onclick="showProcessingModal()">İşlem durumunu aç</button>
             <span class="badge"><i class="fa-solid fa-brain"></i> ViT-B/32 CLIP</span>
             <span class="badge"><i class="fa-solid fa-microphone"></i> Whisper Speech</span>
             <span class="badge badge-accent"><i class="fa-solid fa-bolt"></i> PySceneDetect</span>
@@ -322,9 +323,10 @@
                 </div>
                 <ol class="activity-list" id="activityList"></ol>
             </div>
+            <button class="progress-background-btn" type="button" onclick="hideProcessingModal()">Arka planda devam et</button>
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=progress-recovery-1"></script>
 </body>
 </html>
