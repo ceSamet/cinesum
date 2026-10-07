@@ -45,7 +45,7 @@ def launch_server():
     print("==================================================================")
 
     # Launch uvicorn web server
-    uvicorn.run("app:app", host=host, port=port, reload=False)
+    uvicorn.run("app:app", host=host, port=port, reload=False   )
 
 if __name__ == "__main__":
     launch_server()

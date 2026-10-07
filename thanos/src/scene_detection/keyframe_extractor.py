@@ -73,10 +73,15 @@ def extract_keyframes_for_scenes(
             best_score = -1.0
             best_frame = None
 
-            # Sample frames in window
-            for fn in range(w_start, w_end + 1, sample_step):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
-                ret, frame = cap.read()
+            # Seek once per window. Repeated random seeks for every sample can
+            # decode the same GOP thousands of times on a long movie.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, w_start)
+            for fn in range(w_start, w_end + 1):
+                if not cap.grab():
+                    break
+                if (fn - w_start) % sample_step:
+                    continue
+                ret, frame = cap.retrieve()
                 if not ret or frame is None:
                     continue
 
