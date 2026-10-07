@@ -29,6 +29,8 @@ def extract_keyframes_for_scenes(
     - Scenes >= long_scene_threshold: 3 keyframes (sharpest frame in start, mid, end windows).
     """
     video_path_obj = Path(video_path)
+    if sample_step < 1:
+        raise ValueError("sample_step en az 1 olmalıdır")
     video_stem = video_path_obj.stem
     output_path = Path(output_dir) / video_stem
     output_path.mkdir(parents=True, exist_ok=True)
@@ -73,10 +75,15 @@ def extract_keyframes_for_scenes(
             best_score = -1.0
             best_frame = None
 
-            # Sample frames in window
-            for fn in range(w_start, w_end + 1, sample_step):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
-                ret, frame = cap.read()
+            # Seek once per window, then decode forward. Seeking for every sampled
+            # frame is especially expensive on inter-frame compressed videos.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, w_start)
+            for fn in range(w_start, w_end + 1):
+                if not cap.grab():
+                    break
+                if (fn - w_start) % sample_step:
+                    continue
+                ret, frame = cap.retrieve()
                 if not ret or frame is None:
                     continue
 
