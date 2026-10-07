@@ -31,6 +31,8 @@ def test_interval_projection_and_f1():
     gold = tvsum.intervals_mask([{"start": 3.0, "end": 5.0}], 100, 10.0)
     assert sum(predicted) == sum(gold) == 20
     assert tvsum.f1(predicted, gold) == pytest.approx(0.5)
+    assert tvsum.recall(predicted, gold) == pytest.approx(0.5)
+    assert tvsum.precision(predicted, gold) == pytest.approx(0.5)
 
 
 def test_invalid_intervals_are_rejected():
@@ -38,6 +40,20 @@ def test_invalid_intervals_are_rejected():
         tvsum.intervals_mask([{"start": -1, "end": 2}], 100, 10.0)
     with pytest.raises(ValueError):
         tvsum.intervals_mask([{"start": 4, "end": 2}], 100, 10.0)
+
+
+def test_score_only_knapsack_picks_higher_value_shot():
+    shots = [
+        {"start_seconds": 0.0, "end_seconds": 6.0, "importance_score": 0.1},
+        {"start_seconds": 6.0, "end_seconds": 12.0, "importance_score": 0.9},
+    ]
+    assert tvsum.select_scored_shots(shots, 400, 40.0) == [{"start": 6.0, "end": 12.0}]
+
+
+def test_uniform_duration_matched_baseline():
+    assert sum(tvsum.uniform_mask(600)) == 90
+    assert sum(tvsum.uniform_mask(600, 60)) == 60
+    assert sum(tvsum.uniform_mask(1200, 120)) == 120
 
 
 def test_wrong_video1_is_not_used_as_tvsum(monkeypatch, tmp_path):
