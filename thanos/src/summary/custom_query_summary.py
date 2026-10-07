@@ -28,6 +28,7 @@ def generate_custom_query_summary(
     progress_callback: Optional[Callable[[int, str, str, str], None]] = None,
     narrative_mode: str = "local",
     base_scored_scenes: Optional[List[Dict[str, Any]]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
     """
     Encode natural language text query into 512-dim CLIP vector.
@@ -179,7 +180,8 @@ def generate_custom_query_summary(
         segments=segments,
         output_mp4_path=str(output_p),
         category="custom",
-        progress_callback=progress_callback
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
 
     # Construct selected_scenes list matching segment timestamps for frontend playback

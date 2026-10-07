@@ -113,6 +113,7 @@ def analyze_video_features(
     *,
     profile_name: str = "balanced",
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
     """Build reusable video features with stage-level cache validation."""
@@ -120,6 +121,8 @@ def analyze_video_features(
     base_dir = Path(base_dir)
     if not video_path.exists():
         raise FileNotFoundError(f"Video bulunamadı: {video_path}")
+    if cancel_check:
+        cancel_check()
 
     profile: AnalysisProfile = get_analysis_profile(profile_name)
     scene_lists_dir = base_dir / "outputs" / "pyscenedetect" / "scene_lists"
@@ -210,6 +213,7 @@ def analyze_video_features(
             str(keyframes_dir),
             long_scene_threshold=10.0,
             sample_step=2,
+            cancel_check=cancel_check,
         )
         if not metadata:
             raise RuntimeError("Hiçbir keyframe üretilemedi.")
@@ -244,6 +248,7 @@ def analyze_video_features(
             str(clip_metadata),
             model_name=clip_config["model"],
             batch_size=clip_batch_size,
+            cancel_check=cancel_check,
         )
         if len(features) == 0 or not metadata:
             raise RuntimeError("CLIP görsel özellikleri üretilemedi.")
@@ -309,6 +314,7 @@ def analyze_video_features(
             beam_size=profile.whisper_beam_size,
             word_timestamps=profile.word_timestamps,
             vad_filter=profile.vad_filter,
+            cancel_check=cancel_check,
         )
         save_transcript(transcript, str(raw_transcript_path))
         return transcript
@@ -395,9 +401,12 @@ def analyze_video_features(
                     wav_path=wav_path,
                     models_dir=base_dir.parent / "samet" / "models" / "opencv",
                     portraits_dir=base_dir / "outputs" / "portraits" / video_alias,
+                    cancel_check=cancel_check,
                 )
                 result["status"] = "ok"
             except Exception as exc:
+                if cancel_check:
+                    cancel_check()
                 result = {"status": "unavailable", "reason": type(exc).__name__,
                           "cast": [], "actors_by_scene": {}, "turns": [],
                           "backend": "unavailable", "speaker_count": 0}

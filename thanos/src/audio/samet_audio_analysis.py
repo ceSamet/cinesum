@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -139,6 +141,8 @@ def assign_speakers(
     turns: list[SpeechTurn],
     max_speakers: int = 8,
     actor_hints: list[str | None] | None = None,
+    timings: dict[str, float] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> int:
     """Cluster voice prints, using reliable on-screen faces as a weak prior."""
     if not turns:
@@ -150,16 +154,24 @@ def assign_speakers(
     from sklearn.metrics import silhouette_score
     from sklearn.preprocessing import StandardScaler
 
+    load_started = time.perf_counter()
     audio, sample_rate = librosa.load(str(wav_path), sr=16000, mono=True)
+    if timings is not None:
+        timings["voice_audio_load_sec"] = round(time.perf_counter() - load_started, 3)
     usable: list[int] = []
     features: list[np.ndarray] = []
+    feature_started = time.perf_counter()
     for index, turn in enumerate(turns):
+        if cancel_check and index % 16 == 0:
+            cancel_check()
         start = max(0, int(turn.start_sec * sample_rate))
         end = min(len(audio), int(turn.end_sec * sample_rate))
         if end - start < sample_rate * 0.45:
             continue
         usable.append(index)
         features.append(_voice_features(audio[start:end], sample_rate))
+    if timings is not None:
+        timings["voice_mfcc_sec"] = round(time.perf_counter() - feature_started, 3)
     if len(features) < 3:
         return 1
 
@@ -168,7 +180,10 @@ def assign_speakers(
     best_labels = np.zeros(len(matrix), dtype=int)
     best_score = -1.0
     upper = min(max_speakers, len(matrix) - 1, max(2, round(len(matrix) ** 0.5)))
+    cluster_started = time.perf_counter()
     for count in range(2, upper + 1):
+        if cancel_check:
+            cancel_check()
         try:
             labels = AgglomerativeClustering(n_clusters=count, metric="cosine", linkage="average").fit_predict(matrix)
             if len(set(labels)) < 2:
@@ -192,6 +207,8 @@ def assign_speakers(
             adjusted += (agreement - 0.5) * 0.12
         if adjusted > best_score:
             best_score, best_labels = adjusted, labels
+    if timings is not None:
+        timings["voice_clustering_sec"] = round(time.perf_counter() - cluster_started, 3)
     if best_score < 0.035:
         best_labels[:] = 0
 

@@ -22,6 +22,7 @@ def export_summary_segments(
     output_mp4_path: str = "summary.mp4",
     category: str = "importance",
     progress_callback: Optional[Callable[[int, str, str, str], None]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     """
     Exports coherent SummarySegment objects using continuous source interval cutting
@@ -71,12 +72,35 @@ def export_summary_segments(
     command.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
     if has_audio:
         command.extend(["-c:a", "aac"])
-    command.extend(["-movflags", "+faststart", str(output_p)])
+    temporary_output = output_p.with_name(f".{output_p.stem}.{os.getpid()}.part.mp4")
+    command.extend(["-movflags", "+faststart", str(temporary_output)])
     if progress_callback:
         progress_callback(85, "Güvenli konuşma kesimleri kodlanıyor...", f"{len(segments)} aralık", "stepExport")
-    process = subprocess.run(command, capture_output=True, text=True)
-    if process.returncode != 0 or not output_p.exists():
-        raise RuntimeError(f"FFmpeg özet üretimi başarısız: {process.stderr[-1200:]}")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        while True:
+            if cancel_check:
+                cancel_check()
+            try:
+                _, stderr = process.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if process.returncode != 0 or not temporary_output.exists():
+            raise RuntimeError(f"FFmpeg özet üretimi başarısız: {stderr[-1200:]}")
+        if cancel_check:
+            cancel_check()
+        temporary_output.replace(output_p)
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+        temporary_output.unlink(missing_ok=True)
+        raise
 
     if progress_callback:
         progress_callback(100, "Özet Video Hazır!", f"{output_p.name}", "stepExport")
@@ -93,6 +117,7 @@ def export_category_summary(
     narrative_mode: str = "local",
     base_dir: Optional[Path] = None,
     video_alias: Optional[str] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     """
     Main Entrypoint for category video summary export:
@@ -240,4 +265,5 @@ def export_category_summary(
         output_mp4_path=output_mp4_path,
         category=category,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )

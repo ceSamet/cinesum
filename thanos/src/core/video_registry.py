@@ -9,7 +9,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable, Optional
 
 
 _registry_lock = threading.Lock()
@@ -23,7 +23,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _store_video_unlocked(file: BinaryIO, video_dir: Path) -> tuple[str, Path, bool]:
+def _store_video_unlocked(file: BinaryIO, video_dir: Path, cancel_check: Optional[Callable[[], None]] = None) -> tuple[str, Path, bool]:
     video_dir.mkdir(parents=True, exist_ok=True)
     registry_path = video_dir / "content_index.json"
     try:
@@ -35,8 +35,12 @@ def _store_video_unlocked(file: BinaryIO, video_dir: Path) -> tuple[str, Path, b
     try:
         with temp_path.open("wb") as target:
             for block in iter(lambda: file.read(4 * 1024 * 1024), b""):
+                if cancel_check:
+                    cancel_check()
                 target.write(block)
                 digest.update(block)
+        if cancel_check:
+            cancel_check()
         content_hash = digest.hexdigest()
         # An old video may predate the index; hash it once and keep the result.
         for existing in video_dir.glob("*.mp4"):
@@ -64,6 +68,6 @@ def _store_video_unlocked(file: BinaryIO, video_dir: Path) -> tuple[str, Path, b
         temp_path.unlink(missing_ok=True)
 
 
-def store_video(file: BinaryIO, video_dir: Path) -> tuple[str, Path, bool]:
+def store_video(file: BinaryIO, video_dir: Path, cancel_check: Optional[Callable[[], None]] = None) -> tuple[str, Path, bool]:
     with _registry_lock:
-        return _store_video_unlocked(file, video_dir)
+        return _store_video_unlocked(file, video_dir, cancel_check=cancel_check)

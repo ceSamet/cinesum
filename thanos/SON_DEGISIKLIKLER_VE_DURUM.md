@@ -35,3 +35,9 @@ Bu aşama ara ilerleme kaydetmediğinden manifestteki `running` kaydı tek baş�
 Thanos test paketinde **139 test ve 9 alt test** geçti; son değişikliklerden sonra ilgili dört test yeniden geçti. `static/app.js` sözdizimi `node --check` ile doğrulandı.
 
 Bir sonraki faydalı iyileştirme, özellikle kişi analizi, ek Whisper ve FFmpeg özet dışa aktarması için **kalıcı aşama süreleri ve ara heartbeat** kaydetmek. Şu an bu aşamaların iç ilerlemesi olmadığı için uzun beklemelerde kesin ETA veya takılma teşhisi verilemiyor.
+
+## 5. Sonraki kişi ayrımı hızlandırması
+
+Bu belgenin ilk durum görüntüsünden sonra `samet_face_analysis.py` içindeki yüz kimliği birleştirme yeniden düzenlendi. Eski kod her birleşmeden sonra bütün küme çiftlerini baştan değerlendiriyordu; yeni kod geçerli adayları öncelik kuyruğunda tutuyor ve yalnız birleşen kümenin karşılaştırmalarını yeniliyor. Aynı eşik ve aynı en iyi-aday sırası korunuyor. `samet_enrichment.py` ve `samet_audio_analysis.py` artık yüz tespiti, ilk kümeleme, kimlik birleştirme, WAV yükleme, MFCC ve konuşmacı kümelemesi sürelerini `people.json` içindeki `timings_sec` alanına yazıyor. Bu kayıtlar **sonraki** analizlerde oluşur; hâlihazırda çalışan işlem yeni kodu kullanmaz.
+
+Yeni doğrulama: 30 sentetik kimlik senaryosunda eski/yeni sonuçlar aynı; 72 yüzlü sentetik örnekte birleştirme süresi 1,545 sn'den 0,007 sn'ye indi. Bu ölçüm bütün kişi analizi için hız garantisi değildir. Güncel test paketi: **140 test, 39 alt test geçti**.

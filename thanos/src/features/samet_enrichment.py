@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from src.audio.samet_audio_analysis import SpeechTurn, assign_speakers
 from src.audio.nezihat_diarization import diarize_transcript, pyannote_available
@@ -23,7 +24,9 @@ def analyze_people(
     wav_path: Path,
     models_dir: Path,
     portraits_dir: Path,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    timings: dict[str, float] = {}
     frame_lookup = {}
     for row in keyframes:
         scene_id = int(row["scene_id"])
@@ -41,11 +44,18 @@ def analyze_people(
         for scene in scenes if int(scene["scene_id"]) in frame_lookup
     ]
     try:
+        face_started = time.perf_counter()
         presence, cast, face_boxes = analyze_faces(
             adapted, models_dir, video_path=video_path, portraits_dir=portraits_dir,
+            timings=timings,
+            cancel_check=cancel_check,
         )
+        timings["faces_total_sec"] = round(time.perf_counter() - face_started, 3)
         face_warning = None
     except Exception as exc:
+        if cancel_check:
+            cancel_check()
+        timings["faces_total_sec"] = round(time.perf_counter() - face_started, 3)
         presence, cast, face_boxes = {}, [], {}
         face_warning = type(exc).__name__
     turns = [
@@ -59,6 +69,7 @@ def analyze_people(
         scene = next((row for row in scenes if row["start_seconds"] <= midpoint < row["end_seconds"]), None)
         actors = presence.get(int(scene["scene_id"]), []) if scene else []
         hints.append(actors[0] if len(actors) == 1 else None)
+    speaker_started = time.perf_counter()
     preferred = os.getenv("THANOS_DIARIZATION_BACKEND", "auto").strip().lower()
     if preferred not in {"auto", "pyannote", "samet"}:
         raise ValueError("THANOS_DIARIZATION_BACKEND auto, pyannote veya samet olmalıdır")
@@ -102,13 +113,14 @@ def analyze_people(
         speaker_count = len({row["speaker"] for row in diarization["turns"]})
         backend = "nezihat_pyannote"
     else:
-        speaker_count = assign_speakers(wav_path, turns, actor_hints=hints) if wav_path.exists() else 0
+        speaker_count = assign_speakers(wav_path, turns, actor_hints=hints, timings=timings, cancel_check=cancel_check) if wav_path.exists() else 0
         final_turns = [
             {"start": turn.start_sec, "end": turn.end_sec, "text": turn.text,
              "speaker": turn.speaker, "actor": turn.actor}
             for turn in turns
         ]
         backend = "samet_mfcc"
+    timings["speaker_assignment_sec"] = round(time.perf_counter() - speaker_started, 3)
     return {
         "backend": backend,
         "fallback_reason": fallback_reason,
@@ -121,4 +133,5 @@ def analyze_people(
         "diarization_turns": diarization["turns"] if diarization else [],
         "overlaps": diarization["overlaps"] if diarization else [],
         "correction": diarization["correction"] if diarization else {},
+        "timings_sec": timings,
     }

@@ -5,6 +5,7 @@ let selectedVideoAlias = '';
 let progressPollInterval = null;
 let diskProgressPollInterval = null;
 let processingModalDismissed = false;
+let currentPolledTaskId = null;
 const diskSceneCache = new Map();
 const ACTIVE_TASK_KEY = 'cinesum_active_task_v1';
 const LAST_VIDEO_KEY = 'cinesum_last_video_v1';
@@ -240,6 +241,7 @@ function switchPlayerViewMode(mode) {
 
 // Real-time Progress Polling Function
 function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyor", recovered = false) {
+    currentPolledTaskId = taskId;
     if (diskProgressPollInterval) clearInterval(diskProgressPollInterval);
     diskProgressPollInterval = null;
     const modal = document.getElementById('processingModal');
@@ -265,6 +267,10 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
     processingModalDismissed = false;
     modal.classList.remove('hidden');
     document.getElementById('resumeProgressBtn')?.classList.remove('hidden');
+    const cancelButton = document.getElementById('cancelTaskBtn');
+    cancelButton.classList.remove('hidden');
+    cancelButton.disabled = false;
+    cancelButton.textContent = 'İşlemi iptal et';
 
     if (progressPollInterval) clearInterval(progressPollInterval);
 
@@ -281,6 +287,9 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
                 }
 
                 const p = progData.progress || 0;
+                cancelButton.disabled = progData.status === 'cancel_requested';
+                cancelButton.textContent = progData.status === 'cancel_requested' ? 'Durduruluyor…' : 'İşlemi iptal et';
+                if (['completed', 'failed', 'cancelled', 'interrupted'].includes(progData.status)) cancelButton.classList.add('hidden');
                 fillEl.style.width = `${p}%`;
                 percentEl.textContent = `${p}%`;
                 stageDescEl.textContent = progData.stage_desc || 'İşleniyor...';
@@ -329,7 +338,7 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
                         }
                     }
                 });
-                if (recovered && progData.result && progData.progress >= 100) {
+                if (recovered && progData.result && progData.status === 'completed') {
                     const task = readActiveTask();
                     stopProgressPolling();
                     clearActiveTask(taskId);
@@ -345,10 +354,10 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
                         await loadVideoInfo(selectedVideoAlias);
                         switchTab('select');
                     }
-                } else if (recovered && progData.progress === 0 && progData.events?.some(e => e.status === 'failed')) {
+                } else if (recovered && ['cancelled', 'failed', 'interrupted'].includes(progData.status)) {
                     stopProgressPolling();
                     clearActiveTask(taskId);
-                    alert(`[HATA] ${progData.detail || 'İşlem tamamlanamadı.'}`);
+                    if (progData.status === 'failed') alert(`[HATA] ${progData.detail || 'İşlem tamamlanamadı.'}`);
                 }
             }
         } catch (e) {
@@ -360,6 +369,7 @@ function startProgressPolling(taskId, modalTitleText = "Yapay Zekâ Analiz Ediyo
 }
 
 function stopProgressPolling(hideModal = true) {
+    currentPolledTaskId = null;
     if (progressPollInterval) {
         clearInterval(progressPollInterval);
         progressPollInterval = null;
@@ -435,6 +445,7 @@ async function fetchAnalysisStatus(alias) {
 }
 
 function showDiskStatus(status) {
+    document.getElementById('cancelTaskBtn').classList.add('hidden');
     const modal = document.getElementById('processingModal');
     const stage = status.stage;
     document.getElementById('modalTitle').textContent = `Video analizi: ${status.video_alias}`;
@@ -530,6 +541,93 @@ function showProcessingModal() {
     document.getElementById('processingModal').classList.remove('hidden');
 }
 
+async function cancelCurrentTask(taskId = currentPolledTaskId) {
+    if (!taskId) return;
+    if (!confirm('Bu işlemi durdurmak istiyor musun? Tamamlanan analiz verileri korunacak.')) return;
+    try {
+        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'İptal isteği gönderilemedi');
+        document.getElementById('cancelTaskBtn').disabled = true;
+        document.getElementById('cancelTaskBtn').textContent = 'Durduruluyor…';
+        await refreshTaskHistory();
+    } catch (error) { alert(`İptal edilemedi: ${error.message}`); }
+}
+
+async function openTaskHistory() {
+    document.getElementById('historyModal').classList.remove('hidden');
+    await refreshTaskHistory();
+}
+
+function closeTaskHistory() {
+    document.getElementById('historyModal').classList.add('hidden');
+}
+
+async function openHistoryTask(taskId) {
+    const response = await fetch(`/api/progress/${encodeURIComponent(taskId)}`);
+    const task = await response.json();
+    if (!task.found) return;
+    closeTaskHistory();
+    if (task.status === 'completed' && task.result?.output_video_url) {
+        selectedVideoAlias = task.video_alias;
+        document.getElementById('videoSelect').value = selectedVideoAlias;
+        currentSummaryData = task.result;
+        renderSummaryResult(task.result);
+        switchPlayerViewMode('summary');
+    } else if (task.status === 'completed' && task.video_alias) {
+        selectedVideoAlias = task.video_alias;
+        document.getElementById('videoSelect').value = selectedVideoAlias;
+        await loadVideoInfo(selectedVideoAlias);
+        switchTab('select');
+    } else {
+        if (task.status === 'running' || task.status === 'cancel_requested') {
+            saveActiveTask({ id: taskId, kind: task.kind, title: task.stage_desc, videoAlias: task.video_alias });
+            startProgressPolling(taskId, task.stage_desc, true);
+        }
+    }
+}
+
+async function refreshTaskHistory() {
+    const list = document.getElementById('taskHistoryList');
+    try {
+        const response = await fetch('/api/tasks', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Geçmiş alınamadı');
+        const { tasks } = await response.json();
+        list.replaceChildren();
+        if (!tasks.length) { list.textContent = 'Henüz kayıtlı işlem yok.'; return; }
+        const labels = { running: 'Çalışıyor', cancel_requested: 'Durduruluyor', completed: 'Tamamlandı', failed: 'Hata', cancelled: 'İptal edildi', interrupted: 'Yarım kaldı' };
+        for (const task of tasks) {
+            const row = document.createElement('article');
+            row.className = 'history-row';
+            const main = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = `${task.kind === 'summary' ? 'Özet' : 'Analiz'} · ${task.video_alias || 'Yeni video'}`;
+            const meta = document.createElement('small');
+            meta.textContent = `${new Date((task.started_at || task.updated_at) * 1000).toLocaleString('tr-TR')} · ${labels[task.status] || task.status || 'Bilinmiyor'} · %${task.progress || 0}`;
+            const stage = document.createElement('span');
+            stage.textContent = task.stage_desc || '';
+            main.append(title, meta, stage);
+            const actions = document.createElement('div');
+            actions.className = 'history-actions';
+            const open = document.createElement('button');
+            open.textContent = task.status === 'completed' ? 'Aç' : 'Durum';
+            open.onclick = () => task.legacy && task.output_video_url
+                ? window.open(task.output_video_url, '_blank', 'noopener')
+                : openHistoryTask(task.id);
+            actions.append(open);
+            if (task.status === 'running' || task.status === 'cancel_requested') {
+                const stop = document.createElement('button');
+                stop.textContent = 'İptal';
+                stop.disabled = task.status === 'cancel_requested';
+                stop.onclick = () => cancelCurrentTask(task.id);
+                actions.append(stop);
+            }
+            row.append(main, actions);
+            list.append(row);
+        }
+    } catch (error) { list.textContent = error.message; }
+}
+
 // Handle Drag & Drop Upload
 async function handleFileUpload(files) {
     if (!files || files.length === 0) return;
@@ -560,7 +658,7 @@ async function handleFileUpload(files) {
             selectedVideoAlias = data.video_alias;
             localStorage.setItem(LAST_VIDEO_KEY, data.video_alias);
             await loadVideoInfo(data.video_alias);
-        } else {
+        } else if (res.status !== 409) {
             alert(`[HATA] Video yüklenemedi: ${data.detail || data.message || 'Bilinmeyen hata'}`);
         }
     } catch (err) {
@@ -605,7 +703,7 @@ async function triggerSummarization() {
             currentSummaryData = data;
             renderSummaryResult(data);
             switchPlayerViewMode('summary'); // Automatically switch to summary view mode on summary generation!
-        } else {
+        } else if (res.status !== 409) {
             alert(`[HATA] Özet oluşturulamadı: ${data.detail || data.message || 'Bilinmeyen hata'}`);
         }
     } catch (err) {
@@ -720,8 +818,8 @@ function renderCurrentViewMode() {
     if (currentViewMode === 'full') {
         // MODE 1: FULL UNTRIMMED ORIGINAL VIDEO
         player.src = `/dataset/video/${data.video_alias}.mp4`;
-        scrubberTitle.innerHTML = `<i class="fa-solid fa-sliders"></i> Renk Kodlu Çekim Çizelgesi — 🎬 Orijinal Tam Video (${allScenes.length} Çekim)`;
-        chartTitle.innerHTML = `<i class="fa-solid fa-chart-line"></i> Canlı Yapay Zekâ Skor Dağılım Dalga Grafiği — 🎬 Orijinal Tam Video (${allScenes.length} Çekim)`;
+        scrubberTitle.innerHTML = `<i class="fa-solid fa-sliders"></i> Sahne zaman çizelgesi · Orijinal video (${allScenes.length})`;
+        chartTitle.innerHTML = `<i class="fa-solid fa-chart-line"></i> Sahne puanları · Orijinal video`;
 
         renderScrubberTimelineBar(allScenes, selectedScenes);
         renderAnalyticsChart(allScenes, "Orijinal Tam Video");
@@ -730,8 +828,8 @@ function renderCurrentViewMode() {
     } else {
         // MODE 2: GENERATED SUMMARY VIDEO ONLY
         player.src = data.output_video_url;
-        scrubberTitle.innerHTML = `<i class="fa-solid fa-sliders"></i> Renk Kodlu Çekim Çizelgesi — ⚡ Yapay Zekâ Özeti (${selectedScenes.length} Kesilmiş Çekim)`;
-        chartTitle.innerHTML = `<i class="fa-solid fa-chart-line"></i> Canlı Yapay Zekâ Skor Dağılım Dalga Grafiği — ⚡ Yapay Zekâ Özeti (${selectedScenes.length} Kesilmiş Çekim)`;
+        scrubberTitle.innerHTML = `<i class="fa-solid fa-sliders"></i> Sahne zaman çizelgesi · Özet (${selectedScenes.length})`;
+        chartTitle.innerHTML = `<i class="fa-solid fa-chart-line"></i> Sahne puanları · Özet`;
 
         renderScrubberTimelineBar(selectedScenes, selectedScenes);
         renderAnalyticsChart(selectedScenes, "Kesilmiş Yapay Zekâ Özeti");

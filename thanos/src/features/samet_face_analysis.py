@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import heapq
 import math
+import time
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -24,57 +27,69 @@ def _merge_duplicate_clusters(
     Using the whole scene here used to preserve false identity splits whenever
     the same actor appeared with a different pose or disguise later in a shot.
     """
-    labels = np.asarray(labels, dtype=int).copy()
-    while True:
-        groups = {
-            label: np.flatnonzero(labels == label)
-            for label in sorted(set(map(int, labels)))
-        }
-        best_candidate: tuple[float, int, int] | None = None
-        group_items = list(groups.items())
-        for left_pos, (left_label, left_indices) in enumerate(group_items):
-            left_frames = {frame_owners[index] for index in left_indices}
-            left_scenes = {
-                owner[0] if isinstance(owner, tuple) else owner
-                for owner in left_frames
-            }
-            for right_label, right_indices in group_items[left_pos + 1:]:
-                # Two identities visible at the same instant cannot be the same person.
-                right_frames = {frame_owners[index] for index in right_indices}
-                if left_frames & right_frames:
-                    continue
-                right_scenes = {
-                    owner[0] if isinstance(owner, tuple) else owner
-                    for owner in right_frames
-                }
-                left_center = _unit(matrix[left_indices].mean(axis=0))
-                right_center = _unit(matrix[right_indices].mean(axis=0))
-                center_distance = 1.0 - float(left_center @ right_center)
-                pair_distances = 1.0 - matrix[left_indices] @ matrix[right_indices].T
-                best_pair_distance = float(pair_distances.min())
-                # Average-link clustering can split profiles from frontal faces.
-                # Merge only when the prototypes remain close and at least one
-                # cross-cluster observation is a strong match.
-                if left_scenes & right_scenes:
-                    # Alternating close-ups of co-stars often share one detected
-                    # scene. Permit a repair there only for near-duplicate faces.
-                    strong_match = center_distance <= 0.38 and best_pair_distance <= 0.27
-                    pose_bridge = center_distance <= 0.42 and best_pair_distance <= 0.22
-                else:
-                    strong_match = center_distance <= 0.46 and best_pair_distance <= 0.40
-                    pose_bridge = center_distance <= 0.50 and best_pair_distance <= 0.32
-                if not (strong_match or pose_bridge):
-                    continue
-                score = center_distance * 0.7 + best_pair_distance * 0.3
-                if best_candidate is None or score < best_candidate[0]:
-                    best_candidate = (score, left_label, right_label)
-        if best_candidate is None:
-            break
-        _, keep, remove = best_candidate
-        labels[labels == remove] = keep
+    labels = np.asarray(labels, dtype=int)
+    groups = {label: np.flatnonzero(labels == label) for label in sorted(set(map(int, labels)))}
+    frames = {label: {frame_owners[index] for index in indices} for label, indices in groups.items()}
+    scenes = {
+        label: {owner[0] if isinstance(owner, tuple) else owner for owner in owners}
+        for label, owners in frames.items()
+    }
+    centers = {label: _unit(matrix[indices].mean(axis=0)) for label, indices in groups.items()}
+    versions = {label: 0 for label in groups}
+    candidates: list[tuple[float, int, int, int, int]] = []
 
-    remap = {label: index for index, label in enumerate(sorted(set(map(int, labels))))}
-    return np.asarray([remap[int(label)] for label in labels], dtype=int)
+    def offer(left: int, right: int) -> None:
+        if left > right:
+            left, right = right, left
+        if frames[left] & frames[right]:
+            return
+        center_distance = 1.0 - float(centers[left] @ centers[right])
+        # Neither same-scene nor cross-scene rules can accept a more distant
+        # pair. Reject it before the expensive observation-pair matrix product.
+        if center_distance > 0.50:
+            return
+        pair_distances = 1.0 - matrix[groups[left]] @ matrix[groups[right]].T
+        best_pair_distance = float(pair_distances.min())
+        if scenes[left] & scenes[right]:
+            strong_match = center_distance <= 0.38 and best_pair_distance <= 0.27
+            pose_bridge = center_distance <= 0.42 and best_pair_distance <= 0.22
+        else:
+            strong_match = center_distance <= 0.46 and best_pair_distance <= 0.40
+            pose_bridge = center_distance <= 0.50 and best_pair_distance <= 0.32
+        if strong_match or pose_bridge:
+            score = center_distance * 0.7 + best_pair_distance * 0.3
+            heapq.heappush(candidates, (score, left, right, versions[left], versions[right]))
+
+    ordered = list(groups)
+    center_matrix = np.asarray([centers[label] for label in ordered])
+    for position, left in enumerate(ordered[:-1]):
+        similarities = center_matrix[position + 1:] @ center_matrix[position]
+        # Loose numerical prefilter; offer() applies the original exact limits.
+        for offset in np.flatnonzero(similarities >= 0.499999):
+            offer(left, ordered[position + 1 + int(offset)])
+
+    while candidates:
+        _, keep, remove, keep_version, remove_version = heapq.heappop(candidates)
+        if (keep not in groups or remove not in groups
+                or versions[keep] != keep_version or versions[remove] != remove_version):
+            continue
+        groups[keep] = np.sort(np.concatenate((groups[keep], groups.pop(remove))))
+        frames[keep].update(frames.pop(remove))
+        scenes[keep].update(scenes.pop(remove))
+        centers[keep] = _unit(matrix[groups[keep]].mean(axis=0))
+        versions[keep] += 1
+        del versions[remove], centers[remove]
+        # Other candidate scores did not change; only the merged identity needs
+        # new pair checks. The heap retains the original best-score ordering.
+        for other in groups:
+            if other != keep:
+                offer(keep, other)
+
+    remap = {label: index for index, label in enumerate(sorted(groups))}
+    result = np.empty(len(labels), dtype=int)
+    for label, indices in groups.items():
+        result[indices] = remap[label]
+    return result
 
 
 def _face_quality(image: np.ndarray, face: np.ndarray, aligned: np.ndarray) -> float:
@@ -137,6 +152,8 @@ def analyze_faces(
     models_dir: Path,
     video_path: Path | None = None,
     portraits_dir: Path | None = None,
+    timings: dict[str, float] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[dict[int, list[str]], list[dict], dict[int, list[dict]]]:
     detector_path = models_dir / "face_detection_yunet_2023mar.onnx"
     recognizer_path = models_dir / "face_recognition_sface_2021dec.onnx"
@@ -148,6 +165,7 @@ def analyze_faces(
     observations: list[dict] = []
     sample_totals: dict[int, int] = defaultdict(int)
 
+    detection_started = time.perf_counter()
     capture = cv2.VideoCapture(str(video_path)) if video_path else None
     # Multiple views reduce profile/frontal splits. Keep the extra work bounded
     # on videos containing hundreds of shots.
@@ -188,6 +206,8 @@ def analyze_faces(
 
     try:
         for scene in scenes:
+            if cancel_check:
+                cancel_check()
             primary = cv2.imread(str(scene.frame_path))
             inspect(primary, scene, 0, True)
             if not capture or not capture.isOpened() or extra_samples == 0 or scene.duration_sec < 1.0:
@@ -202,6 +222,8 @@ def analyze_faces(
     finally:
         if capture:
             capture.release()
+    if timings is not None:
+        timings["face_detection_sec"] = round(time.perf_counter() - detection_started, 3)
 
     if not observations:
         return {}, [], {}
@@ -215,10 +237,16 @@ def analyze_faces(
     if len(matrix) == 1:
         labels = np.zeros(1, dtype=int)
     else:
+        cluster_started = time.perf_counter()
         labels = AgglomerativeClustering(
             n_clusters=None, distance_threshold=0.42, metric="cosine", linkage="average"
         ).fit_predict(matrix)
+        if timings is not None:
+            timings["face_agglomerative_sec"] = round(time.perf_counter() - cluster_started, 3)
+        merge_started = time.perf_counter()
         labels = _merge_duplicate_clusters(matrix, labels, owners)
+        if timings is not None:
+            timings["face_merge_sec"] = round(time.perf_counter() - merge_started, 3)
 
     scene_samples: dict[int, dict[int, set[tuple[int, int]]]] = defaultdict(lambda: defaultdict(set))
     raw_presence: dict[int, set[int]] = defaultdict(set)

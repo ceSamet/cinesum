@@ -3,7 +3,7 @@ import ctypes
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 
 _whisper_models: Dict[Tuple[str, str, str, str], Any] = {}
@@ -128,6 +128,7 @@ def transcribe_audio_with_whisper(
     word_timestamps: bool = True,
     vad_filter: bool = True,
     language: Optional[str] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
     """Transcribe audio into a backend-independent segment/word schema."""
     wav_path = Path(audio_wav_path)
@@ -155,7 +156,11 @@ def transcribe_audio_with_whisper(
                     condition_on_previous_text=False,
                 )
                 # CTranslate2 may only load libcublas while iterating.
-                segments = [_serialize_faster_segment(segment) for segment in segment_iterator]
+                segments = []
+                for segment in segment_iterator:
+                    if cancel_check:
+                        cancel_check()
+                    segments.append(_serialize_faster_segment(segment))
                 break
             except Exception as exc:
                 error_text = str(exc).lower()

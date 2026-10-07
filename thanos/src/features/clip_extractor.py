@@ -2,7 +2,7 @@ import os
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Callable
 
 # Fix Windows Symlink Permission Issue for HuggingFace Hub
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -125,6 +125,7 @@ def extract_clip_features_for_video(
     output_json_path: str,
     model_name: str = "openai/clip-vit-base-patch32",
     batch_size: Optional[int] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     """
     Extract L2-normalized 512-dim CLIP visual embeddings for keyframes of a video.
@@ -155,6 +156,8 @@ def extract_clip_features_for_video(
     processed_meta = []
 
     for batch_start in range(0, len(valid_meta), resolved_batch_size):
+        if cancel_check:
+            cancel_check()
         batch_meta = valid_meta[batch_start:batch_start + resolved_batch_size]
         images = []
         loaded_meta = []
