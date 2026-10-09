@@ -7,6 +7,7 @@ import re
 import threading
 import asyncio
 import time
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -48,6 +49,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 progress_store: Dict[str, Dict[str, Any]] = {}
 progress_store_lock = threading.Lock()
 cancel_events: Dict[str, threading.Event] = {}
+pending_cancel_times: Dict[str, float] = {}
 TASK_DIR = BASE_DIR / "outputs" / "tasks"
 TASK_DIR.mkdir(parents=True, exist_ok=True)
 analysis_locks: Dict[str, threading.Lock] = {}
@@ -96,6 +98,7 @@ def _finish_task(task_id: str, status: str, description: str, detail: str = "") 
             record["progress"] = 0
         _save_task(task_id, record)
         cancel_events.pop(task_id, None)
+        pending_cancel_times.pop(task_id, None)
 
 
 async def run_in_threadpool(func, *args, **kwargs):
@@ -193,6 +196,20 @@ def get_analysis_disk_status(video_alias: str) -> Dict[str, Any]:
         "keyframes_done": None,
         "keyframes_total": None,
     }
+    with progress_store_lock:
+        active = [
+            (task_id, record) for task_id, record in progress_store.items()
+            if record.get("video_alias") == video_alias
+            and record.get("status") in {"running", "cancel_requested"}
+            and task_id in cancel_events
+        ]
+    if active:
+        task_id, task = max(active, key=lambda item: item[1].get("updated_at", 0))
+        response["task_id"] = task_id
+        response["task_status"] = task["status"]
+    elif status == "running":
+        # A stale manifest after a restart is not a cancellable live worker.
+        response["status"] = "interrupted"
     scene_path = BASE_DIR / "outputs" / "pyscenedetect" / "scene_lists" / f"{video_alias}_scenes.json"
     try:
         scenes = json.loads(scene_path.read_text(encoding="utf-8"))
@@ -260,11 +277,24 @@ async def get_video_info(video_alias: str):
     if not v_mp4.exists():
         raise HTTPException(status_code=404, detail=f"Video bulunamadı: {video_alias}")
 
+    duration_sec = None
+    try:
+        probe = await run_in_threadpool(
+            subprocess.run,
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(v_mp4)],
+            capture_output=True, text=True, check=True, timeout=5,
+        )
+        duration_sec = float(probe.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
     artifact_status = get_analysis_artifact_status(BASE_DIR, video_alias)
     if not artifact_status["ready"]:
         return {
             "success": False,
             "video_alias": video_alias,
+            "duration_sec": duration_sec,
             "analysis_status": "missing",
             "missing_artifacts": artifact_status["missing"],
             "message": (
@@ -279,6 +309,7 @@ async def get_video_info(video_alias: str):
         return {
             "success": True,
             "video_alias": video_alias,
+            "duration_sec": duration_sec,
             "video_url": f"/dataset/video/{video_alias}.mp4",
             "all_scenes": scored_scenes,
             "cast": _people_data(video_alias).get("cast", []),
@@ -288,6 +319,7 @@ async def get_video_info(video_alias: str):
         return {
             "success": False,
             "video_alias": video_alias,
+            "duration_sec": duration_sec,
             "message": f"Bu video henüz analiz edilmemiş. 'Yapay Zekâ Özeti Üret' butonuna basarak ilk analizi başlatabilirsiniz.",
             "all_scenes": [],
         }
@@ -362,7 +394,18 @@ async def cancel_task(task_id: str):
     with progress_store_lock:
         record = progress_store.get(task_id)
         if not record:
-            raise HTTPException(status_code=404, detail="Aktif işlem bulunamadı.")
+            # The browser can cancel before a large multipart upload reaches its
+            # handler. Remember that request briefly so it cannot start later.
+            if not re.fullmatch(r"task_[a-z0-9]{7}_[0-9]{10,}", task_id):
+                raise HTTPException(status_code=404, detail="Aktif işlem bulunamadı.")
+            now = time.time()
+            for old_id, created_at in list(pending_cancel_times.items()):
+                if now - created_at > 600:
+                    pending_cancel_times.pop(old_id, None)
+                    cancel_events.pop(old_id, None)
+            cancel_events.setdefault(task_id, threading.Event()).set()
+            pending_cancel_times[task_id] = now
+            return {"status": "cancel_requested"}
         if record.get("status") in {"completed", "failed", "cancelled"}:
             return {"status": record["status"]}
         event = cancel_events.get(task_id)
@@ -434,7 +477,8 @@ async def upload_and_process_video(
     video_dir.mkdir(parents=True, exist_ok=True)
 
     with progress_store_lock:
-        cancel_events[task_id] = threading.Event()
+        cancel_events.setdefault(task_id, threading.Event())
+        pending_cancel_times.pop(task_id, None)
     try:
         set_task_metadata(task_id, kind="upload", filename=file.filename, status="running")
         update_task_progress(task_id, 10, "Video dosyası kaydediliyor...", file.filename, "stepScene")
@@ -695,7 +739,8 @@ async def generate_summary(req: SummarizeRequest):
         raise HTTPException(status_code=404, detail=f"Video bulunamadı: {video_alias}")
 
     with progress_store_lock:
-        cancel_events[task_id] = threading.Event()
+        cancel_events.setdefault(task_id, threading.Event())
+        pending_cancel_times.pop(task_id, None)
     try:
         set_task_metadata(task_id, kind="summary", video_alias=video_alias, category=category, status="running")
         update_task_progress(task_id, 10, "Yapay Zekâ Analizi Başlatılıyor...", f"Kategori: {category.upper()}", "stepScene")

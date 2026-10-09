@@ -170,6 +170,7 @@ def analyze_video_features(
             str(video_path),
             detector_type="adaptive",
             adaptive_threshold=3.0,
+            cancel_check=cancel_check,
         )
         save_scenes_to_json(detected, str(scenes_json))
         save_scenes_to_csv(detected, str(scenes_csv))
@@ -276,7 +277,7 @@ def analyze_video_features(
         "audio_extraction",
         audio_config,
         [wav_path],
-        lambda: extract_audio_from_video(str(video_path), str(wav_path)),
+        lambda: extract_audio_from_video(str(video_path), str(wav_path), cancel_check=cancel_check),
         force=force,
     )
 

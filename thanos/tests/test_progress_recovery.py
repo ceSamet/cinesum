@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -32,10 +33,27 @@ class TestProgressRecovery(unittest.TestCase):
             frames = base / "outputs/pyscenedetect/keyframes/video3"
             frames.mkdir(parents=True)
             (frames / "video3_scene_001_kf1.jpg").write_bytes(b"jpg")
+            task_id = "live-video3-test"
             with patch.object(web_app, "BASE_DIR", base):
-                status = web_app.get_analysis_disk_status("video3")
+                with web_app.progress_store_lock:
+                    web_app.cancel_events[task_id] = threading.Event()
+                    web_app.progress_store[task_id] = {
+                        "video_alias": "video3", "status": "running", "updated_at": 1,
+                    }
+                try:
+                    status = web_app.get_analysis_disk_status("video3")
+                    with web_app.progress_store_lock:
+                        web_app.cancel_events.pop(task_id)
+                        web_app.progress_store.pop(task_id)
+                    interrupted = web_app.get_analysis_disk_status("video3")
+                finally:
+                    with web_app.progress_store_lock:
+                        web_app.cancel_events.pop(task_id, None)
+                        web_app.progress_store.pop(task_id, None)
 
         self.assertEqual(status["status"], "running")
+        self.assertEqual(status["task_id"], task_id)
+        self.assertEqual(interrupted["status"], "interrupted")
         self.assertEqual(status["stage"], "keyframes")
         self.assertEqual(status["scene_count"], 2)
         self.assertEqual(status["keyframes_done"], 1)

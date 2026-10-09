@@ -1,19 +1,55 @@
 import os
 import json
 import subprocess
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 
 import librosa
 import numpy as np
 
-def extract_audio_from_video(video_path: str, output_wav_path: str) -> str:
+def extract_audio_from_video(
+    video_path: str,
+    output_wav_path: str,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> str:
     """
     Extract 16kHz mono WAV audio from video using FFmpeg.
     """
     video_p = Path(video_path)
     out_p = Path(output_wav_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = out_p.with_name(f".{out_p.stem}.{uuid.uuid4().hex}.part.wav")
+
+    def run_ffmpeg(command: list[str]) -> None:
+        if cancel_check:
+            cancel_check()
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            while True:
+                if cancel_check:
+                    cancel_check()
+                try:
+                    _, stderr = process.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if process.returncode:
+                detail = stderr.decode("utf-8", errors="replace")[-1200:]
+                raise RuntimeError(f"FFmpeg ses çıkarma işlemi başarısız oldu: {detail}")
+            if cancel_check:
+                cancel_check()
+            temporary_output.replace(out_p)
+        except BaseException:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+            temporary_output.unlink(missing_ok=True)
+            raise
 
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
@@ -27,11 +63,11 @@ def extract_audio_from_video(video_path: str, output_wav_path: str) -> str:
             capture_output=True, text=True, check=True,
         )
         duration = max(0.1, float(duration_probe.stdout.strip()))
-        subprocess.run([
+        run_ffmpeg([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=16000",
-            "-t", f"{duration:.3f}", "-c:a", "pcm_s16le", str(out_p),
-        ], check=True)
+            "-t", f"{duration:.3f}", "-c:a", "pcm_s16le", str(temporary_output),
+        ])
         return str(out_p)
 
     cmd = [
@@ -42,14 +78,10 @@ def extract_audio_from_video(video_path: str, output_wav_path: str) -> str:
         "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-ac", "1",
-        str(out_p)
+        str(temporary_output)
     ]
 
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc)
-        raise RuntimeError(f"FFmpeg ses çıkarma işlemi başarısız oldu: {stderr[-1200:]}") from exc
+    run_ffmpeg(cmd)
 
     if not out_p.exists() or out_p.stat().st_size == 0:
         raise RuntimeError("FFmpeg ses çıktısı oluşturamadı veya çıktı boş.")

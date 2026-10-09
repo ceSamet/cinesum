@@ -83,7 +83,7 @@ class TestAnalysisPipelineCache(unittest.TestCase):
                 )
                 return [[0.1, 0.2]], [{"scene_id": 1}]
 
-            def fake_audio(_video_path, output_path):
+            def fake_audio(_video_path, output_path, **_kwargs):
                 Path(output_path).write_bytes(b"wav")
                 return output_path
 

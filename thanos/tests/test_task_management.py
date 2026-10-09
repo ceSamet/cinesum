@@ -9,6 +9,23 @@ import app as web_app
 
 
 class TestTaskManagement(unittest.TestCase):
+    def test_cancel_before_upload_handler_starts_is_preserved(self):
+        task_id = "task_abcdefg_1234567890123"
+        with tempfile.TemporaryDirectory() as directory, patch.object(web_app, "TASK_DIR", Path(directory) / "tasks"):
+            web_app.TASK_DIR.mkdir()
+            try:
+                response = asyncio.run(web_app.cancel_task(task_id))
+                self.assertEqual(response["status"], "cancel_requested")
+                with web_app.progress_store_lock:
+                    web_app.cancel_events.setdefault(task_id, threading.Event())
+                    web_app.pending_cancel_times.pop(task_id, None)
+                with self.assertRaises(web_app.TaskCancelled):
+                    web_app._cancel_checkpoint(task_id)
+            finally:
+                with web_app.progress_store_lock:
+                    web_app.cancel_events.pop(task_id, None)
+                    web_app.pending_cancel_times.pop(task_id, None)
+
     def test_cancel_waits_for_worker_checkpoint_and_history_persists(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web_app, "TASK_DIR", Path(directory) / "tasks"), patch.object(web_app, "BASE_DIR", Path(directory)):
             web_app.TASK_DIR.mkdir()

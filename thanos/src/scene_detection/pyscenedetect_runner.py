@@ -1,16 +1,39 @@
 import json
 import csv
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 
 from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector, AdaptiveDetector
+
+
+class _CancellableAdaptiveDetector(AdaptiveDetector):
+    def __init__(self, cancel_check: Callable[[], None], **kwargs):
+        super().__init__(**kwargs)
+        self._cancel_check = cancel_check
+
+    def process_frame(self, timecode, frame_img):
+        if timecode.get_frames() % 64 == 0:
+            self._cancel_check()
+        return super().process_frame(timecode, frame_img)
+
+
+class _CancellableContentDetector(ContentDetector):
+    def __init__(self, cancel_check: Callable[[], None], **kwargs):
+        super().__init__(**kwargs)
+        self._cancel_check = cancel_check
+
+    def process_frame(self, timecode, frame_img):
+        if timecode.get_frames() % 64 == 0:
+            self._cancel_check()
+        return super().process_frame(timecode, frame_img)
 
 def detect_scenes_pyscenedetect(
     video_path: str,
     detector_type: str = "content",
     threshold: float = 27.0,
     adaptive_threshold: float = 3.0,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Detect scenes in a video file using PySceneDetect.
@@ -28,11 +51,21 @@ def detect_scenes_pyscenedetect(
     scene_manager = SceneManager()
     
     if detector_type.lower() == "adaptive":
-        scene_manager.add_detector(AdaptiveDetector(adaptive_threshold=adaptive_threshold))
+        detector = (_CancellableAdaptiveDetector(cancel_check, adaptive_threshold=adaptive_threshold)
+                    if cancel_check else AdaptiveDetector(adaptive_threshold=adaptive_threshold))
     else:
-        scene_manager.add_detector(ContentDetector(threshold=threshold))
+        detector = (_CancellableContentDetector(cancel_check, threshold=threshold)
+                    if cancel_check else ContentDetector(threshold=threshold))
+    scene_manager.add_detector(detector)
         
-    scene_manager.detect_scenes(video)
+    if cancel_check:
+        cancel_check()
+    scene_manager.detect_scenes(
+        video,
+        callback=(lambda _frame, _timecode: cancel_check()) if cancel_check else None,
+    )
+    if cancel_check:
+        cancel_check()
     scene_list = scene_manager.get_scene_list()
     if not scene_list and video.frame_number > 0:
         # A valid static shot is still one scene; PySceneDetect can return []

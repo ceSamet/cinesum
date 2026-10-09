@@ -6,6 +6,7 @@ let progressPollInterval = null;
 let diskProgressPollInterval = null;
 let processingModalDismissed = false;
 let currentPolledTaskId = null;
+let currentUploadRequest = null;
 const diskSceneCache = new Map();
 const ACTIVE_TASK_KEY = 'cinesum_active_task_v1';
 const LAST_VIDEO_KEY = 'cinesum_last_video_v1';
@@ -55,6 +56,7 @@ async function loadVideoInfo(videoAlias) {
         const res = await fetch(`/api/video-info/${videoAlias}`);
         const data = await res.json();
 
+        updateDurationSliderLimits(data.duration_sec, data.all_scenes);
         if (data.success && data.all_scenes && data.all_scenes.length > 0) {
             currentSummaryData = {
                 video_alias: videoAlias,
@@ -62,9 +64,6 @@ async function loadVideoInfo(videoAlias) {
                 all_scenes: data.all_scenes,
                 selected_scenes: [], // No summary selected yet
             };
-
-            // Keep the slider within the selected video's length and the 10-minute UI limit.
-            updateDurationSliderLimits(data.all_scenes);
 
             currentViewMode = 'full';
             renderCurrentViewMode();
@@ -83,21 +82,27 @@ function formatDuration(seconds) {
     return minutes ? `${minutes} dk${remainder ? ` ${remainder} sn` : ''}` : `${remainder} sn`;
 }
 
-// Limit the slider to ten minutes, or the video's length when shorter.
-function updateDurationSliderLimits(allScenes) {
+// Scale the useful summary range to the source, without a fixed 10-minute cap.
+function updateDurationSliderLimits(durationSec, allScenes = []) {
     const slider = document.getElementById('durationSlider');
+    const sceneEnd = allScenes?.reduce((latest, sc) => Math.max(latest, Number(sc.end_seconds) || 0), 0) || 0;
+    const total = Math.floor(Number(durationSec) || sceneEnd);
+    if (!Number.isFinite(total) || total <= 0) return;
 
-    if (!allScenes || allScenes.length === 0) return;
-
-    const totalDurSec = Math.round(Math.max(...allScenes.map(sc => sc.end_seconds)));
-
-    if (totalDurSec > 0) {
-        const maxDuration = Math.min(600, totalDurSec);
-        slider.min = String(Math.min(10, maxDuration));
-        slider.max = String(maxDuration);
-        slider.value = String(Math.min(Number(slider.value), maxDuration));
-        updateDurationValue(slider.value);
-    }
+    const step = total < 30 ? 1 : total < 300 ? 5 : total < 1800 ? 15 : 30;
+    const minimum = Math.min(total, Math.max(step, Math.ceil(Math.max(10, total * 0.01) / step) * step));
+    const maximum = Math.max(minimum, Math.floor(Math.min(total, Math.max(30, total * 0.25)) / step) * step);
+    const suggested = Math.round(Math.min(maximum, Math.max(minimum, total * 0.10)) / step) * step;
+    const previousTotal = Number(slider.dataset.videoDuration) || 0;
+    const previousValue = Number(slider.value);
+    const keepUserChoice = previousTotal === total && slider.dataset.userAdjusted === 'true';
+    slider.min = String(minimum);
+    slider.max = String(maximum);
+    slider.step = String(step);
+    slider.value = String(Math.max(minimum, Math.min(maximum, keepUserChoice ? previousValue : suggested)));
+    slider.dataset.videoDuration = String(total);
+    slider.dataset.userAdjusted = keepUserChoice ? 'true' : 'false';
+    updateDurationValue(slider.value, false);
 }
 
 // Fetch list of processed videos from backend
@@ -169,9 +174,10 @@ function selectCategory(cat) {
 }
 
 // Duration slider & checkbox controls
-function updateDurationValue(val) {
+function updateDurationValue(val, userAdjusted = true) {
     const slider = document.getElementById('durationSlider');
-    document.getElementById('durValueDisplay').textContent = `${formatDuration(val)} (Maks: ${formatDuration(slider.max)})`;
+    if (userAdjusted) slider.dataset.userAdjusted = 'true';
+    document.getElementById('durValueDisplay').textContent = `${formatDuration(val)} · Aralık: ${formatDuration(slider.min)}–${formatDuration(slider.max)}`;
 }
 
 function toggleSelectAll(isChecked) {
@@ -445,7 +451,11 @@ async function fetchAnalysisStatus(alias) {
 }
 
 function showDiskStatus(status) {
-    document.getElementById('cancelTaskBtn').classList.add('hidden');
+    const cancelButton = document.getElementById('cancelTaskBtn');
+    currentPolledTaskId = status.task_id || null;
+    cancelButton.classList.toggle('hidden', !status.task_id);
+    cancelButton.disabled = status.task_status === 'cancel_requested';
+    cancelButton.textContent = cancelButton.disabled ? 'Durduruluyor…' : 'İşlemi iptal et';
     const modal = document.getElementById('processingModal');
     const stage = status.stage;
     document.getElementById('modalTitle').textContent = `Video analizi: ${status.video_alias}`;
@@ -494,6 +504,11 @@ async function restoreDiskWork(videoAliases) {
         try { status = await fetchAnalysisStatus(alias); }
         catch { continue; }
         if (!status || status.status !== 'running') continue;
+        if (status.task_id) {
+            saveActiveTask({ id: status.task_id, kind: 'upload', title: 'Video analizi sürüyor', videoAlias: alias });
+            startProgressPolling(status.task_id, `Video analizi: ${alias}`, true);
+            return;
+        }
         selectedVideoAlias = alias;
         localStorage.setItem(LAST_VIDEO_KEY, alias);
         document.getElementById('videoSelect').value = alias;
@@ -542,14 +557,30 @@ function showProcessingModal() {
 }
 
 async function cancelCurrentTask(taskId = currentPolledTaskId) {
-    if (!taskId) return;
+    if (!taskId) {
+        alert('Bu analiz önceki sunucu oturumundan kalmış; canlı işlem bulunamadığı için iptal edilemiyor.');
+        return;
+    }
     if (!confirm('Bu işlemi durdurmak istiyor musun? Tamamlanan analiz verileri korunacak.')) return;
     try {
         const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'İptal isteği gönderilemedi');
-        document.getElementById('cancelTaskBtn').disabled = true;
-        document.getElementById('cancelTaskBtn').textContent = 'Durduruluyor…';
+        if (data.status !== 'cancel_requested') {
+            alert('İşlem zaten tamamlanmış; artık iptal edilemiyor.');
+            await refreshTaskHistory();
+            return;
+        }
+        if (currentUploadRequest?.taskId === taskId) {
+            currentUploadRequest.controller.abort();
+            currentUploadRequest = null;
+            stopProgressPolling();
+            clearActiveTask(taskId);
+        }
+        if (taskId === currentPolledTaskId) {
+            document.getElementById('cancelTaskBtn').disabled = true;
+            document.getElementById('cancelTaskBtn').textContent = 'Durduruluyor…';
+        }
         await refreshTaskHistory();
     } catch (error) { alert(`İptal edilemedi: ${error.message}`); }
 }
@@ -634,6 +665,8 @@ async function handleFileUpload(files) {
     const file = files[0];
 
     const taskId = generateTaskId();
+    const controller = new AbortController();
+    currentUploadRequest = { taskId, controller };
     saveActiveTask({ id: taskId, kind: 'upload', title: 'Yeni Video Yükleniyor ve Analiz Ediliyor' });
     startProgressPolling(taskId, "Yeni Video Yükleniyor ve Analiz Ediliyor");
 
@@ -644,6 +677,7 @@ async function handleFileUpload(files) {
         const res = await fetch(`/api/upload?task_id=${taskId}`, {
             method: 'POST',
             body: formData,
+            signal: controller.signal,
         });
 
         const data = await res.json();
@@ -663,7 +697,10 @@ async function handleFileUpload(files) {
         }
     } catch (err) {
         stopProgressPolling();
+        if (err.name === 'AbortError') return;
         alert(`[HATA] Bağlantı kesildi: ${err}. Sunucudaki işlem sürüyor olabilir; sayfayı yenileyerek durumunu görebilirsin.`);
+    } finally {
+        if (currentUploadRequest?.taskId === taskId) currentUploadRequest = null;
     }
 }
 
